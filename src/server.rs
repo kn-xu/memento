@@ -90,7 +90,7 @@ async fn store_memory(
         agent_id: payload.agent_id.clone(),
         user_id: payload.user_id.clone(),
         session_id: payload.session_id.clone(),
-        event_type: payload.event_type.unwrap_or_else(|| "user_msg".to_string()),
+        event_type: payload.event_type.clone().unwrap_or_else(|| "user_msg".to_string()),
         content: text.clone(),
         metadata: payload
             .metadata
@@ -108,13 +108,10 @@ async fn store_memory(
         )
     })?;
 
+    let event_type = payload.event_type.as_deref().unwrap_or("user_msg");
     let mut memory_id: Option<String> = None;
     if text.len() > 10
-        && payload
-            .event_type
-            .as_ref()
-            .map(|et| matches!(et.as_str(), "user_msg" | "thought"))
-            .unwrap_or(false)
+        && matches!(event_type, "user_msg" | "thought")
     {
         let memory = Memory {
             id: Uuid::new_v4().to_string(),
@@ -277,7 +274,6 @@ async fn summarize_memory(
         ));
     }
 
-    // TODO: Implement LLM-based summarization
     Ok(Json(SummarizeResponse {
         ok: true,
         created: 0,

@@ -14,15 +14,15 @@ path = "src/main.rs"
 # Web framework
 axum = { version = "0.7", features = ["macros", "json"] }
 tokio = { version = "1.35", features = ["full"] }
-tower = "0.4"
 tower-http = { version = "0.5", features = ["cors"] }
 
 # Database
-sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "sqlite", "postgres", "chrono", "uuid"] }
-rusqlite = { version = "0.30", features = ["bundled"] }
+sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "sqlite", "postgres", "chrono", "uuid"] }
+# Note: We use sqlx for both SQLite and PostgreSQL with connection pooling for thread-safety
+# sqlx 0.8 required for pgvector 0.4 sqlx feature support
 
 # Vector search
-pgvector = "0.2"
+pgvector = { version = "0.4", features = ["sqlx"] }
 
 # Embeddings
 reqwest = { version = "0.11", features = ["json"] }

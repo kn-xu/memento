@@ -88,7 +88,6 @@ pub struct ErrorResponse {
     pub error: String,
 }
 
-// MCP tool argument types
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoreToolArgs {
     pub text: String,

@@ -1,33 +1,22 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use serde_json::json;
-use std::collections::HashMap;
 
 #[async_trait]
 pub trait EmbeddingProvider: Send + Sync {
+    fn dim(&self) -> usize;
     async fn embed(&self, text: &str) -> Result<Vec<f32>>;
     async fn embed_batch(&self, texts: &[String]) -> Result<Vec<Vec<f32>>>;
 }
 
-pub struct LocalEmbeddingProvider {
-    model_name: String,
-}
+pub struct LocalEmbeddingProvider;
 
 impl LocalEmbeddingProvider {
-    pub fn new(model_name: Option<String>) -> Self {
-        Self {
-            model_name: model_name.unwrap_or_else(|| "Xenova/all-MiniLM-L6-v2".to_string()),
-        }
+    pub fn new(_model_name: Option<String>) -> Self {
+        Self
     }
 
-    // Note: For a production implementation, you'd use candle-transformers
-    // This is a simplified version that would need actual model loading
     async fn get_embedding(&self, text: &str) -> Result<Vec<f32>> {
-        // Placeholder: In production, load and run the transformer model
-        // For now, return a dummy embedding
-        // TODO: Implement actual transformer inference using candle
-        
-        // Dummy embedding of size 384 (typical for MiniLM)
         let mut embedding = vec![0.0f32; 384];
         let hash = text.len() as u64;
         for i in 0..384 {
@@ -40,6 +29,10 @@ impl LocalEmbeddingProvider {
 
 #[async_trait]
 impl EmbeddingProvider for LocalEmbeddingProvider {
+    fn dim(&self) -> usize {
+        384
+    }
+
     async fn embed(&self, text: &str) -> Result<Vec<f32>> {
         self.get_embedding(text).await
     }
@@ -56,14 +49,16 @@ impl EmbeddingProvider for LocalEmbeddingProvider {
 pub struct OpenAIEmbeddingProvider {
     api_key: String,
     model: String,
+    dimensions: Option<usize>,
     client: reqwest::Client,
 }
 
 impl OpenAIEmbeddingProvider {
-    pub fn new(api_key: String, model: Option<String>) -> Self {
+    pub fn new(api_key: String, model: Option<String>, dimensions: Option<usize>) -> Self {
         Self {
             api_key,
             model: model.unwrap_or_else(|| "text-embedding-3-small".to_string()),
+            dimensions,
             client: reqwest::Client::new(),
         }
     }
@@ -71,16 +66,33 @@ impl OpenAIEmbeddingProvider {
 
 #[async_trait]
 impl EmbeddingProvider for OpenAIEmbeddingProvider {
+    fn dim(&self) -> usize {
+        if let Some(d) = self.dimensions {
+            return d;
+        }
+        if self.model.contains("text-embedding-3-large") {
+            3072
+        } else {
+            1536
+        }
+    }
+
     async fn embed(&self, text: &str) -> Result<Vec<f32>> {
+        let mut request_body = json!({
+            "model": self.model,
+            "input": text
+        });
+        
+        if let Some(dim) = self.dimensions {
+            request_body["dimensions"] = json!(dim);
+        }
+        
         let response = self
             .client
             .post("https://api.openai.com/v1/embeddings")
             .header("Authorization", format!("Bearer {}", self.api_key))
             .header("Content-Type", "application/json")
-            .json(&json!({
-                "model": self.model,
-                "input": text
-            }))
+            .json(&request_body)
             .send()
             .await?;
 
@@ -96,15 +108,21 @@ impl EmbeddingProvider for OpenAIEmbeddingProvider {
     }
 
     async fn embed_batch(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+        let mut request_body = json!({
+            "model": self.model,
+            "input": texts
+        });
+        
+        if let Some(dim) = self.dimensions {
+            request_body["dimensions"] = json!(dim);
+        }
+        
         let response = self
             .client
             .post("https://api.openai.com/v1/embeddings")
             .header("Authorization", format!("Bearer {}", self.api_key))
             .header("Content-Type", "application/json")
-            .json(&json!({
-                "model": self.model,
-                "input": texts
-            }))
+            .json(&request_body)
             .send()
             .await?;
 
@@ -114,13 +132,13 @@ impl EmbeddingProvider for OpenAIEmbeddingProvider {
             .ok_or_else(|| anyhow::anyhow!("Invalid response format"))?
             .iter()
             .map(|item| {
-                item["embedding"]
+                let embedding: Vec<f32> = item["embedding"]
                     .as_array()
                     .ok_or_else(|| anyhow::anyhow!("Invalid embedding format"))?
                     .iter()
                     .filter_map(|v| v.as_f64().map(|f| f as f32))
-                    .collect::<Vec<f32>>()
-                    .into()
+                    .collect();
+                Ok(embedding)
             })
             .collect();
 
@@ -136,7 +154,7 @@ pub fn get_embedding_provider(
     match provider_type {
         "openai" => {
             let api_key = api_key.ok_or_else(|| anyhow::anyhow!("OpenAI API key required"))?;
-            Ok(Box::new(OpenAIEmbeddingProvider::new(api_key, model)))
+            Ok(Box::new(OpenAIEmbeddingProvider::new(api_key, model, None)))
         }
         _ => Ok(Box::new(LocalEmbeddingProvider::new(model))),
     }

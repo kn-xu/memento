@@ -34,13 +34,19 @@ cargo run -- serve
 
 ### Configuration
 
-Create a `.env` file:
+Create a `.env` file (supports both `MEMENTO_*` and non-prefixed names):
 
 ```env
+# Database (use MEMENTO_DATABASE_URL or DATABASE_URL)
+MEMENTO_DATABASE_URL=sqlite://./memento.db
+# or
 DATABASE_URL=sqlite://./memento.db
-VECTOR_STORE=sqlite-vss
+
+# Embeddings (optional, defaults to local)
 EMBEDDING_PROVIDER=local
 EMBEDDING_MODEL=Xenova/all-MiniLM-L6-v2
+
+# Server (only for REST API)
 PORT=8000
 HOST=0.0.0.0
 ```
@@ -48,8 +54,7 @@ HOST=0.0.0.0
 For PostgreSQL:
 
 ```env
-DATABASE_URL=postgresql://user:pass@localhost/memento
-VECTOR_STORE=pgvector
+MEMENTO_DATABASE_URL=postgresql://user:pass@localhost/memento
 EMBEDDING_PROVIDER=openai
 OPENAI_API_KEY=sk-...
 ```
@@ -132,7 +137,7 @@ Add to `~/.cursor/mcp.json`:
 
 #### SQLite Configuration (Default)
 
-**Simplest setup** - Uses defaults (SQLite database at `./db` in the binary's directory):
+**Simplest setup** - Uses defaults (SQLite database at `./memento.db` in the binary's directory):
 
 ```json
 {
@@ -229,7 +234,7 @@ No additional setup or manual steps required!
 
 **Defaults (no config needed):**
 - Database type: SQLite
-- Database location: `./db` (relative to where the binary runs)
+- Database location: `./memento.db` (relative to where the binary runs)
 
 **To customize:**
 - Set `MEMENTO_DATABASE_TYPE` and `MEMENTO_DATABASE_URL` in the `env` object, OR
@@ -238,16 +243,27 @@ No additional setup or manual steps required!
 **Configuration Priority** (highest to lowest):
 1. CLI arguments (`--database-type`, `--database-url`)
 2. Environment variables (`MEMENTO_DATABASE_TYPE`, `MEMENTO_DATABASE_URL`, or `DATABASE_URL`)
-3. Defaults (SQLite at `./db`)
+3. Defaults (SQLite at `./memento.db`)
 
 #### Environment Variables
 
-- `MEMENTO_DATABASE_TYPE`: `sqlite` or `postgresql` (default: `sqlite`)
-- `MEMENTO_DATABASE_URL`: 
-  - For SQLite: Path to database file (e.g., `./db` or `/path/to/db.sqlite`)
+**Database:**
+- `MEMENTO_DATABASE_TYPE`: `sqlite` or `postgresql` (default: `sqlite`) - MCP only
+- `MEMENTO_DATABASE_URL` or `DATABASE_URL`: 
+  - For SQLite: Path to database file (e.g., `./memento.db` or `/path/to/db.sqlite`)
   - For PostgreSQL: Full connection string (e.g., `postgresql://user:pass@host:5432/dbname`)
-  - Default: `./db` (for SQLite)
-- `DATABASE_URL`: Fallback if `MEMENTO_DATABASE_URL` is not set (useful for PostgreSQL)
+  - Default: `sqlite://./memento.db` (for both REST API and MCP)
+
+**Embeddings (optional, for semantic search):**
+- `MEMENTO_EMBEDDING_PROVIDER` or `EMBEDDING_PROVIDER`: `local` or `openai` (default: `local`)
+- `MEMENTO_EMBEDDING_MODEL` or `EMBEDDING_MODEL`: Model name (default: `Xenova/all-MiniLM-L6-v2`)
+- `MEMENTO_OPENAI_API_KEY` or `OPENAI_API_KEY`: Required if using OpenAI embeddings
+
+**Server (REST API only):**
+- `MEMENTO_PORT` or `PORT`: Server port (default: `8000`)
+- `MEMENTO_HOST` or `HOST`: Server host (default: `0.0.0.0`)
+
+**Note:** All environment variables support both `MEMENTO_*` prefixed and non-prefixed versions. Prefixed versions take priority.
 
 ## 🏗️ Architecture
 

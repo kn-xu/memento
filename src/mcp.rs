@@ -7,7 +7,7 @@ use anyhow::Result;
 use chrono::Utc;
 use serde_json::json;
 use serde_json::Value;
-use std::collections::HashMap;
+use sqlx::Row;
 use std::io::{self, BufRead, BufReader, Write};
 use std::sync::Arc;
 use uuid::Uuid;
@@ -16,7 +16,6 @@ pub async fn start_mcp_server(
     database_type: Option<String>,
     database_url: Option<String>,
 ) -> Result<()> {
-    // Priority: CLI args > Environment variables > Defaults
     let db_type = database_type
         .or_else(|| std::env::var("MEMENTO_DATABASE_TYPE").ok())
         .unwrap_or_else(|| "sqlite".to_string());
@@ -24,19 +23,14 @@ pub async fn start_mcp_server(
     let db_url = database_url
         .or_else(|| std::env::var("MEMENTO_DATABASE_URL").ok())
         .or_else(|| {
-            // Default based on database type
             match db_type.as_str() {
                 "postgresql" | "postgres" => {
                     std::env::var("DATABASE_URL").ok()
                 }
-                _ => {
-                    // Default SQLite path
-                    Some("./db".to_string())
-                }
+                _ => Some("./memento.db".to_string())
             }
         });
 
-    // Build final database URL
     let db_url = match db_type.as_str() {
         "postgresql" | "postgres" => {
             let url = db_url.ok_or_else(|| {
@@ -45,7 +39,6 @@ pub async fn start_mcp_server(
                 )
             })?;
             
-            // Ensure proper prefix
             if !url.starts_with("postgresql://") && !url.starts_with("postgres://") {
                 format!("postgresql://{}", url)
             } else {
@@ -53,8 +46,7 @@ pub async fn start_mcp_server(
             }
         }
         _ => {
-            // SQLite
-            let path = db_url.unwrap_or_else(|| "./db".to_string());
+            let path = db_url.unwrap_or_else(|| "./memento.db".to_string());
             let path = path.strip_prefix("sqlite://").unwrap_or(&path);
             format!("sqlite://{}", path)
         }
@@ -78,7 +70,6 @@ pub async fn start_mcp_server(
 
     let vector_store = Arc::new(VectorStore::new(db.clone(), embedding_provider));
 
-    // MCP server via stdio
     let stdin = io::stdin();
     let mut stdout = io::stdout();
     let reader = BufReader::new(stdin.lock());
@@ -109,7 +100,7 @@ async fn handle_mcp_request(
 ) -> Result<Value> {
     let method = request["method"].as_str().unwrap_or("");
     let params = &request["params"];
-    let id = request["id"].clone();
+    let id = request.get("id").cloned().unwrap_or(Value::Null);
 
     let result: Result<Value, anyhow::Error> = match method {
         "tools/list" => Ok(json!({
@@ -246,13 +237,16 @@ async fn handle_store(
         return Err(anyhow::anyhow!("text is required"));
     }
 
+    // Use default event_type if not provided (same default used for event creation)
+    let event_type = args.event_type.unwrap_or_else(|| "user_msg".to_string());
+
     let event_id = Uuid::new_v4().to_string();
     let event = MemoryEvent {
         id: event_id.clone(),
         agent_id: args.agent_id.clone(),
         user_id: args.user_id.clone(),
         session_id: args.session_id.clone(),
-        event_type: args.event_type.unwrap_or_else(|| "user_msg".to_string()),
+        event_type: event_type.clone(),
         content: args.text.clone(),
         metadata: args
             .metadata
@@ -264,12 +258,9 @@ async fn handle_store(
     db.insert_event(&event).await?;
 
     let mut memory_id: Option<String> = None;
+    // Create durable memory if text is substantial and event_type is one that should be stored
     if args.text.len() > 10
-        && args
-            .event_type
-            .as_ref()
-            .map(|et| matches!(et.as_str(), "user_msg" | "thought"))
-            .unwrap_or(false)
+        && matches!(event_type.as_str(), "user_msg" | "thought")
     {
         let memory = Memory {
             id: Uuid::new_v4().to_string(),
@@ -310,6 +301,8 @@ async fn handle_store(
             }
         }
 
+        // VectorStore::add() computes the embedding (since we pass None) and then
+        // UPDATEs the memories.embedding column, so embeddings are properly stored
         vector_store
             .add(&mem_id, &args.text, None, vector_metadata)
             .await?;
@@ -341,7 +334,8 @@ async fn handle_search(
     let k = args.k.unwrap_or(5);
     let filters = args.filters.unwrap_or_default();
 
-    let vector_results = vector_store
+    // Try vector search first (semantic search)
+    let mut vector_results = vector_store
         .search(
             &args.query,
             k,
@@ -350,6 +344,18 @@ async fn handle_search(
             args.user_id.as_deref(),
         )
         .await?;
+
+    // If vector search returns no results, fall back to keyword search
+    if vector_results.is_empty() {
+        vector_results = keyword_search_fallback(
+            db,
+            &args.query,
+            k,
+            Some(&args.agent_id),
+            args.user_id.as_deref(),
+        )
+        .await?;
+    }
 
     let mut results = Vec::new();
     for result in vector_results {
@@ -388,8 +394,149 @@ async fn handle_search(
     }))
 }
 
+/// Keyword search fallback when vector search returns no results
+/// Uses SQL LIKE for simple text matching
+async fn keyword_search_fallback(
+    db: &DatabaseClient,
+    query: &str,
+    k: usize,
+    agent_id: Option<&str>,
+    user_id: Option<&str>,
+) -> Result<Vec<crate::vector_store::VectorSearchResult>> {
+    use crate::vector_store::VectorSearchResult;
+    use crate::types::Metadata;
+    
+    let search_pattern = format!("%{}%", query);
+    let mut results = Vec::new();
+
+    match db {
+        DatabaseClient::Sqlite(pool) => {
+            let mut sql_query = sqlx::query(
+                "SELECT id, text, metadata FROM memories 
+                 WHERE is_active = 1 AND text LIKE ?1"
+            )
+            .bind(&search_pattern);
+
+            if let Some(agent_id) = agent_id {
+                sql_query = sqlx::query(
+                    "SELECT id, text, metadata FROM memories 
+                     WHERE is_active = 1 AND text LIKE ?1 AND agent_id = ?2"
+                )
+                .bind(&search_pattern)
+                .bind(agent_id);
+            }
+
+            if let Some(user_id) = user_id {
+                if agent_id.is_some() {
+                    sql_query = sqlx::query(
+                        "SELECT id, text, metadata FROM memories 
+                         WHERE is_active = 1 AND text LIKE ?1 AND agent_id = ?2 AND user_id = ?3"
+                    )
+                    .bind(&search_pattern)
+                    .bind(agent_id.unwrap())
+                    .bind(user_id);
+                } else {
+                    sql_query = sqlx::query(
+                        "SELECT id, text, metadata FROM memories 
+                         WHERE is_active = 1 AND text LIKE ?1 AND user_id = ?2"
+                    )
+                    .bind(&search_pattern)
+                    .bind(user_id);
+                }
+            }
+
+            let rows = sql_query.fetch_all(pool).await?;
+            
+            for row in rows.into_iter().take(k) {
+                let memory_id: String = row.try_get(&"id")?;
+                let text: String = row.try_get(&"text")?;
+                let metadata_str: Option<String> = row.try_get(&"metadata")?;
+                
+                // Simple relevance score based on query term frequency
+                let score = text.to_lowercase().matches(&query.to_lowercase()).count() as f64 / 10.0;
+                
+                let metadata: Metadata = if let Some(meta_str) = metadata_str {
+                    serde_json::from_str(&meta_str).unwrap_or_default()
+                } else {
+                    Metadata::new()
+                };
+
+                results.push(VectorSearchResult {
+                    memory_id,
+                    score: score.min(1.0), // Cap at 1.0
+                    metadata,
+                });
+            }
+        }
+        DatabaseClient::Postgres(pool) => {
+            let mut sql_query = sqlx::query(
+                "SELECT id, text, metadata FROM memories 
+                 WHERE is_active = TRUE AND text ILIKE $1"
+            )
+            .bind(&search_pattern);
+
+            if let Some(agent_id) = agent_id {
+                sql_query = sqlx::query(
+                    "SELECT id, text, metadata FROM memories 
+                     WHERE is_active = TRUE AND text ILIKE $1 AND agent_id = $2"
+                )
+                .bind(&search_pattern)
+                .bind(agent_id);
+            }
+
+            if let Some(user_id) = user_id {
+                if agent_id.is_some() {
+                    sql_query = sqlx::query(
+                        "SELECT id, text, metadata FROM memories 
+                         WHERE is_active = TRUE AND text ILIKE $1 AND agent_id = $2 AND user_id = $3"
+                    )
+                    .bind(&search_pattern)
+                    .bind(agent_id.unwrap())
+                    .bind(user_id);
+                } else {
+                    sql_query = sqlx::query(
+                        "SELECT id, text, metadata FROM memories 
+                         WHERE is_active = TRUE AND text ILIKE $1 AND user_id = $2"
+                    )
+                    .bind(&search_pattern)
+                    .bind(user_id);
+                }
+            }
+
+            let rows = sql_query.fetch_all(pool).await?;
+            
+            for row in rows.into_iter().take(k) {
+                let memory_id: String = row.try_get(&"id")?;
+                let text: String = row.try_get(&"text")?;
+                let metadata_str: Option<String> = row.try_get(&"metadata")?;
+                
+                // Simple relevance score based on query term frequency
+                let score = text.to_lowercase().matches(&query.to_lowercase()).count() as f64 / 10.0;
+                
+                let metadata: Metadata = if let Some(meta_str) = metadata_str {
+                    serde_json::from_str(&meta_str).unwrap_or_default()
+                } else {
+                    Metadata::new()
+                };
+
+                results.push(VectorSearchResult {
+                    memory_id,
+                    score: score.min(1.0), // Cap at 1.0
+                    metadata,
+                });
+            }
+        }
+    }
+
+    // Sort by score descending
+    results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    
+    Ok(results)
+}
+
 async fn handle_summarize(_args: SummarizeToolArgs) -> Result<Value> {
     // TODO: Implement LLM-based summarization
+    // This should:
     Ok(json!({
         "content": [{
             "type": "text",
