@@ -107,11 +107,17 @@ POST /memory/forget
 
 ## 🤝 MCP Integration
 
-Run the MCP server:
+### Quick Setup
 
-```bash
-cargo run -- mcp
-```
+1. **Build the binary** (one-time setup):
+   ```bash
+   cargo build --release
+   ```
+   The binary will be at `target/release/memento` (or `target/release/memento.exe` on Windows).
+
+2. **Configure in Cursor** - Add to `~/.cursor/mcp.json` (see examples below)
+
+3. **Done!** The MCP server will start automatically when Cursor launches.
 
 ### Tools
 
@@ -124,20 +130,124 @@ cargo run -- mcp
 
 Add to `~/.cursor/mcp.json`:
 
+#### SQLite Configuration (Default)
+
+**Simplest setup** - Uses defaults (SQLite database at `./db` in the binary's directory):
+
 ```json
 {
   "mcpServers": {
     "memento": {
-      "command": "cargo",
-      "args": ["run", "--", "mcp"],
-      "cwd": "/path/to/memento",
+      "command": "/absolute/path/to/memento/target/release/memento",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+**Custom database location** - Specify your own database path:
+
+```json
+{
+  "mcpServers": {
+    "memento": {
+      "command": "/absolute/path/to/memento/target/release/memento",
+      "args": ["mcp"],
       "env": {
-        "DATABASE_URL": "sqlite://./memento.db"
+        "MEMENTO_DATABASE_URL": "/home/user/.memento/memories.db"
       }
     }
   }
 }
 ```
+
+**Or hardcode in args:**
+
+```json
+{
+  "mcpServers": {
+    "memento": {
+      "command": "/absolute/path/to/memento/target/release/memento",
+      "args": [
+        "mcp",
+        "--database-url",
+        "/home/user/.memento/memories.db"
+      ]
+    }
+  }
+}
+```
+
+#### PostgreSQL Configuration
+
+**Using environment variables (recommended):**
+
+```json
+{
+  "mcpServers": {
+    "memento": {
+      "command": "/absolute/path/to/memento/target/release/memento",
+      "args": ["mcp"],
+      "env": {
+        "MEMENTO_DATABASE_TYPE": "postgresql",
+        "MEMENTO_DATABASE_URL": "postgresql://user:password@localhost:5432/memento"
+      }
+    }
+  }
+}
+```
+
+**Or hardcode in args:**
+
+```json
+{
+  "mcpServers": {
+    "memento": {
+      "command": "/absolute/path/to/memento/target/release/memento",
+      "args": [
+        "mcp",
+        "--database-type",
+        "postgresql",
+        "--database-url",
+        "postgresql://user:password@localhost:5432/memento"
+      ]
+    }
+  }
+}
+```
+
+### How It Works
+
+Once configured, the MCP server will:
+1. **Start automatically** when Cursor launches
+2. **Connect to your database** using the settings you provided
+3. **Make tools available** to AI assistants for storing and retrieving memories
+
+No additional setup or manual steps required!
+
+### Configuration Options
+
+**Defaults (no config needed):**
+- Database type: SQLite
+- Database location: `./db` (relative to where the binary runs)
+
+**To customize:**
+- Set `MEMENTO_DATABASE_TYPE` and `MEMENTO_DATABASE_URL` in the `env` object, OR
+- Use `--database-type` and `--database-url` in the `args` array
+
+**Configuration Priority** (highest to lowest):
+1. CLI arguments (`--database-type`, `--database-url`)
+2. Environment variables (`MEMENTO_DATABASE_TYPE`, `MEMENTO_DATABASE_URL`, or `DATABASE_URL`)
+3. Defaults (SQLite at `./db`)
+
+#### Environment Variables
+
+- `MEMENTO_DATABASE_TYPE`: `sqlite` or `postgresql` (default: `sqlite`)
+- `MEMENTO_DATABASE_URL`: 
+  - For SQLite: Path to database file (e.g., `./db` or `/path/to/db.sqlite`)
+  - For PostgreSQL: Full connection string (e.g., `postgresql://user:pass@host:5432/dbname`)
+  - Default: `./db` (for SQLite)
+- `DATABASE_URL`: Fallback if `MEMENTO_DATABASE_URL` is not set (useful for PostgreSQL)
 
 ## 🏗️ Architecture
 
