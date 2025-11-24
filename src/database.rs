@@ -1,9 +1,9 @@
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use sqlx::{PgPool, SqlitePool, Row};
+use sqlx::{FromRow, PgPool, SqlitePool, Row};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct MemoryEvent {
     pub id: String,
     pub agent_id: String,
@@ -13,6 +13,8 @@ pub struct MemoryEvent {
     pub content: String,
     pub metadata: Option<String>,
     pub created_at: DateTime<Utc>,
+    #[sqlx(default)]
+    pub summarized_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -23,7 +25,6 @@ pub struct Memory {
     pub session_id: Option<String>,
     pub memory_type: String,
     pub text: String,
-    pub embedding: Option<Vec<u8>>,
     pub importance: f64,
     pub is_active: bool,
     pub supersedes_id: Option<String>,
@@ -41,10 +42,35 @@ pub enum DatabaseClient {
 }
 
 impl DatabaseClient {
+    /// Create a new database client with default embedding dimension (384).
+    /// 
+    /// ⚠️  WARNING: 
+    /// - For SQLite: Works with default dimension (384) for DummyEmbeddingProvider.
+    /// - For PostgreSQL: This will error because Postgres requires explicit embedding_dim.
+    ///   Use `new_with_dim()` or `new_with_provider()` instead.
     pub async fn new(database_url: &str) -> Result<Self> {
+        Self::new_with_dim(database_url, None).await
+    }
+
+    /// Create a new database client using the embedding provider's dimension.
+    /// This ensures the database schema matches the provider's embedding dimension automatically.
+    pub async fn new_with_provider(
+        database_url: &str,
+        provider: &dyn crate::embeddings::EmbeddingProvider,
+    ) -> Result<Self> {
+        Self::new_with_dim(database_url, Some(provider.dim())).await
+    }
+
+    pub async fn new_with_dim(database_url: &str, embedding_dim: Option<usize>) -> Result<Self> {
         if database_url.starts_with("postgresql://") || database_url.starts_with("postgres://") {
+            let embedding_dim = embedding_dim.ok_or_else(|| {
+                anyhow::anyhow!(
+                    "embedding_dim is required for PostgreSQL. Pass the embedding provider's dimension \
+                    (e.g., provider.dim()) to avoid schema mismatches."
+                )
+            })?;
             let pool = PgPool::connect(database_url).await?;
-            Self::init_postgres(&pool).await?;
+            Self::init_postgres(&pool, Some(embedding_dim)).await?;
             Ok(Self::Postgres(pool))
         } else {
             let normalized_url = Self::normalize_sqlite_url(database_url);
@@ -54,8 +80,12 @@ impl DatabaseClient {
         }
     }
 
-    fn normalize_sqlite_url(url: &str) -> String {
+    pub(crate) fn normalize_sqlite_url(url: &str) -> String {
         let mut normalized = url.to_string();
+        
+        if normalized == ":memory:" || normalized == "sqlite::memory:" {
+            return "sqlite::memory:".to_string();
+        }
         
         if let Some((path, _query)) = normalized.split_once('?') {
             normalized = path.to_string();
@@ -89,7 +119,8 @@ impl DatabaseClient {
                 event_type TEXT NOT NULL,
                 content TEXT NOT NULL,
                 metadata TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                summarized_at TIMESTAMP
             )",
         )
         .execute(pool)
@@ -108,6 +139,9 @@ impl DatabaseClient {
             .execute(pool)
             .await?;
         sqlx::query("CREATE INDEX IF NOT EXISTS idx_memory_events_created_at ON memory_events(created_at)")
+            .execute(pool)
+            .await?;
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_memory_events_unsummarized ON memory_events(agent_id, user_id, session_id, summarized_at)")
             .execute(pool)
             .await?;
 
@@ -152,11 +186,33 @@ impl DatabaseClient {
         sqlx::query("CREATE INDEX IF NOT EXISTS idx_memories_created_at ON memories(created_at)")
             .execute(pool)
             .await?;
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_memories_agent_user_active_created ON memories(agent_id, user_id, is_active, created_at DESC)")
+            .execute(pool)
+            .await?;
+        
+        // Create memory_sources join table for provenance
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS memory_sources (
+                memory_id TEXT NOT NULL,
+                event_id TEXT NOT NULL,
+                PRIMARY KEY (memory_id, event_id),
+                FOREIGN KEY (memory_id) REFERENCES memories(id) ON DELETE CASCADE,
+                FOREIGN KEY (event_id) REFERENCES memory_events(id) ON DELETE CASCADE
+            )",
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_memory_sources_memory_id ON memory_sources(memory_id)")
+            .execute(pool)
+            .await?;
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_memory_sources_event_id ON memory_sources(event_id)")
+            .execute(pool)
+            .await?;
 
         Ok(())
     }
 
-    async fn init_postgres(pool: &PgPool) -> Result<()> {
+    async fn init_postgres(pool: &PgPool, embedding_dim: Option<usize>) -> Result<()> {
         sqlx::query("CREATE EXTENSION IF NOT EXISTS vector")
             .execute(pool)
             .await?;
@@ -170,7 +226,8 @@ impl DatabaseClient {
                 event_type TEXT NOT NULL,
                 content TEXT NOT NULL,
                 metadata TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                summarized_at TIMESTAMP
             )",
         )
         .execute(pool)
@@ -191,8 +248,13 @@ impl DatabaseClient {
         sqlx::query("CREATE INDEX IF NOT EXISTS idx_memory_events_created_at ON memory_events(created_at)")
             .execute(pool)
             .await?;
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_memory_events_unsummarized ON memory_events(agent_id, user_id, session_id, summarized_at)")
+            .execute(pool)
+            .await?;
 
-        let embedding_dim = 384;
+        // embedding_dim is required for Postgres (enforced in new_with_dim)
+        // Using expect() to fail fast if someone bypasses the guard
+        let embedding_dim = embedding_dim.expect("embedding_dim required for Postgres");
         
         let create_table_sql = format!(
             "CREATE TABLE IF NOT EXISTS memories (
@@ -238,6 +300,33 @@ impl DatabaseClient {
         sqlx::query("CREATE INDEX IF NOT EXISTS idx_memories_created_at ON memories(created_at)")
             .execute(pool)
             .await?;
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_memories_agent_user_active_created ON memories(agent_id, user_id, is_active, created_at DESC)")
+            .execute(pool)
+            .await?;
+        
+        // Create vector index for approximate similarity search
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_memories_embedding ON memories USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100)")
+            .execute(pool)
+            .await?;
+        
+        // Create memory_sources join table for provenance
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS memory_sources (
+                memory_id TEXT NOT NULL,
+                event_id TEXT NOT NULL,
+                PRIMARY KEY (memory_id, event_id),
+                FOREIGN KEY (memory_id) REFERENCES memories(id) ON DELETE CASCADE,
+                FOREIGN KEY (event_id) REFERENCES memory_events(id) ON DELETE CASCADE
+            )"
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_memory_sources_memory_id ON memory_sources(memory_id)")
+            .execute(pool)
+            .await?;
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_memory_sources_event_id ON memory_sources(event_id)")
+            .execute(pool)
+            .await?;
 
         Ok(())
     }
@@ -278,15 +367,123 @@ impl DatabaseClient {
         Ok(())
     }
 
+    /// List unsummarized events for a given agent/user/session
+    pub async fn list_unsummarized_events(
+        &self,
+        agent_id: &str,
+        user_id: Option<&str>,
+        session_id: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<MemoryEvent>> {
+        match self {
+            Self::Sqlite(pool) => {
+                let mut sql = String::from(
+                    "SELECT id, agent_id, user_id, session_id, event_type, content, metadata, created_at, summarized_at
+                     FROM memory_events
+                     WHERE agent_id = ?1 AND summarized_at IS NULL"
+                );
+                let mut bind_idx = 2;
+
+                if user_id.is_some() {
+                    sql.push_str(&format!(" AND user_id = ?{}", bind_idx));
+                    bind_idx += 1;
+                }
+
+                if session_id.is_some() {
+                    sql.push_str(&format!(" AND session_id = ?{}", bind_idx));
+                    bind_idx += 1;
+                }
+
+                sql.push_str(&format!(" ORDER BY created_at ASC LIMIT ?{}", bind_idx));
+
+                let mut query = sqlx::query_as::<_, MemoryEvent>(&sql).bind(agent_id);
+                if let Some(uid) = user_id {
+                    query = query.bind(uid);
+                }
+                if let Some(sid) = session_id {
+                    query = query.bind(sid);
+                }
+                query = query.bind(limit as i64);
+
+                let events = query.fetch_all(pool).await?;
+                Ok(events)
+            }
+            Self::Postgres(pool) => {
+                let mut sql = String::from(
+                    "SELECT id, agent_id, user_id, session_id, event_type, content, metadata, created_at, summarized_at
+                     FROM memory_events
+                     WHERE agent_id = $1 AND summarized_at IS NULL"
+                );
+                let mut bind_idx = 2;
+
+                if user_id.is_some() {
+                    sql.push_str(&format!(" AND user_id = ${}", bind_idx));
+                    bind_idx += 1;
+                }
+
+                if session_id.is_some() {
+                    sql.push_str(&format!(" AND session_id = ${}", bind_idx));
+                    bind_idx += 1;
+                }
+
+                sql.push_str(&format!(" ORDER BY created_at ASC LIMIT ${}", bind_idx));
+
+                let mut query = sqlx::query_as::<_, MemoryEvent>(&sql).bind(agent_id);
+                if let Some(uid) = user_id {
+                    query = query.bind(uid);
+                }
+                if let Some(sid) = session_id {
+                    query = query.bind(sid);
+                }
+                query = query.bind(limit as i64);
+
+                let events = query.fetch_all(pool).await?;
+                Ok(events)
+            }
+        }
+    }
+
+    /// Mark events as summarized by setting summarized_at timestamp
+    /// Scoped by agent_id to prevent cross-agent contamination
+    pub async fn mark_events_summarized(
+        &self,
+        agent_id: &str,
+        event_ids: &[String],
+    ) -> Result<()> {
+        if event_ids.is_empty() {
+            return Ok(());
+        }
+
+        match self {
+            Self::Sqlite(pool) => {
+                let placeholders: Vec<String> = (2..=event_ids.len() + 1).map(|i| format!("?{}", i)).collect();
+                let sql = format!(
+                    "UPDATE memory_events SET summarized_at = CURRENT_TIMESTAMP WHERE agent_id = ?1 AND id IN ({})",
+                    placeholders.join(", ")
+                );
+                
+                let mut query = sqlx::query(&sql).bind(agent_id);
+                for id in event_ids {
+                    query = query.bind(id);
+                }
+                query.execute(pool).await?;
+            }
+            Self::Postgres(pool) => {
+                // sqlx accepts slices directly for array parameters
+                sqlx::query("UPDATE memory_events SET summarized_at = NOW() WHERE agent_id = $1 AND id = ANY($2::text[])")
+                    .bind(agent_id)
+                    .bind(event_ids)
+                    .execute(pool)
+                    .await?;
+            }
+        }
+        Ok(())
+    }
+
     /// Insert a memory into the database.
     /// 
-    /// **Important invariant**: `memory.embedding` must always be `None` when calling this function.
-    /// Embeddings are added separately via `VectorStore::add()` which updates the embedding column.
-    /// 
-    /// This is because:
-    /// - SQLite stores embeddings as BLOB (Vec<u8>)
-    /// - PostgreSQL stores embeddings as vector(384) (pgvector type)
-    /// - Binding `Option<Vec<u8>>` to a PostgreSQL vector column would fail
+    /// Note: Embeddings are not stored via this function. They are added separately via
+    /// `VectorStore::add()` which updates the embedding column directly.
     pub async fn insert_memory(&self, memory: &Memory) -> Result<()> {
         match self {
             Self::Sqlite(pool) => {
@@ -295,7 +492,7 @@ impl DatabaseClient {
                         id, agent_id, user_id, session_id, memory_type, text, embedding,
                         importance, is_active, supersedes_id, source_event_ids, metadata,
                         last_accessed_at, expires_at
-                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
                 )
                 .bind(&memory.id)
                 .bind(&memory.agent_id)
@@ -303,7 +500,6 @@ impl DatabaseClient {
                 .bind(&memory.session_id)
                 .bind(&memory.memory_type)
                 .bind(&memory.text)
-                .bind(&memory.embedding)
                 .bind(&memory.importance)
                 .bind(&memory.is_active)
                 .bind(&memory.supersedes_id)
@@ -320,7 +516,7 @@ impl DatabaseClient {
                         id, agent_id, user_id, session_id, memory_type, text, embedding,
                         importance, is_active, supersedes_id, source_event_ids, metadata,
                         last_accessed_at, expires_at
-                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)",
+                    ) VALUES ($1, $2, $3, $4, $5, $6, NULL, $7, $8, $9, $10, $11, $12, $13)",
                 )
                 .bind(&memory.id)
                 .bind(&memory.agent_id)
@@ -328,7 +524,6 @@ impl DatabaseClient {
                 .bind(&memory.session_id)
                 .bind(&memory.memory_type)
                 .bind(&memory.text)
-                .bind(&memory.embedding)
                 .bind(&memory.importance)
                 .bind(&memory.is_active)
                 .bind(&memory.supersedes_id)
@@ -346,7 +541,12 @@ impl DatabaseClient {
     pub async fn get_memory(&self, id: &str) -> Result<Option<Memory>> {
         match self {
             Self::Sqlite(pool) => {
-                let row = sqlx::query("SELECT * FROM memories WHERE id = ?1")
+                let row = sqlx::query(
+                    "SELECT id, agent_id, user_id, session_id, memory_type, text,
+                            importance, is_active, supersedes_id, source_event_ids,
+                            metadata, last_accessed_at, created_at, expires_at
+                     FROM memories WHERE id = ?1"
+                )
                     .bind(id)
                     .fetch_optional(pool)
                     .await?;
@@ -358,7 +558,12 @@ impl DatabaseClient {
                 }
             }
             Self::Postgres(pool) => {
-                let row = sqlx::query("SELECT * FROM memories WHERE id = $1")
+                let row = sqlx::query(
+                    "SELECT id, agent_id, user_id, session_id, memory_type, text,
+                            importance, is_active, supersedes_id, source_event_ids,
+                            metadata, last_accessed_at, created_at, expires_at
+                     FROM memories WHERE id = $1"
+                )
                     .bind(id)
                     .fetch_optional(pool)
                     .await?;
@@ -370,6 +575,60 @@ impl DatabaseClient {
                 }
             }
         }
+    }
+
+    pub async fn get_memories_by_ids(&self, ids: &[String]) -> Result<std::collections::HashMap<String, Memory>> {
+        use std::collections::HashMap;
+        
+        if ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        let mut result = HashMap::new();
+        
+        match self {
+            Self::Sqlite(pool) => {
+                // SQLite doesn't support IN with dynamic params easily, so we build the query
+                let placeholders: Vec<String> = (1..=ids.len()).map(|i| format!("?{}", i)).collect();
+                let sql = format!(
+                    "SELECT id, agent_id, user_id, session_id, memory_type, text,
+                            importance, is_active, supersedes_id, source_event_ids,
+                            metadata, last_accessed_at, created_at, expires_at
+                     FROM memories WHERE id IN ({})",
+                    placeholders.join(", ")
+                );
+                
+                let mut query = sqlx::query(&sql);
+                for id in ids {
+                    query = query.bind(id);
+                }
+                
+                let rows = query.fetch_all(pool).await?;
+                for row in rows {
+                    let memory = Self::sqlite_row_to_memory(&row)?;
+                    result.insert(memory.id.clone(), memory);
+                }
+            }
+            Self::Postgres(pool) => {
+                // PostgreSQL: use proper array binding (sqlx accepts slices directly)
+                let rows = sqlx::query(
+                    "SELECT id, agent_id, user_id, session_id, memory_type, text,
+                            importance, is_active, supersedes_id, source_event_ids,
+                            metadata, last_accessed_at, created_at, expires_at
+                     FROM memories WHERE id = ANY($1::text[])"
+                )
+                    .bind(ids)
+                    .fetch_all(pool)
+                    .await?;
+                
+                for row in rows {
+                    let memory = Self::postgres_row_to_memory(&row)?;
+                    result.insert(memory.id.clone(), memory);
+                }
+            }
+        }
+        
+        Ok(result)
     }
 
     pub async fn update_memory_access(&self, id: &str) -> Result<()> {
@@ -408,46 +667,88 @@ impl DatabaseClient {
         Ok(())
     }
 
+    /// This populates the memory_sources join table for tracking event provenance.
+    /// 
+    /// Note: For large batches (hundreds+ event_ids), consider optimizing with batch inserts:
+    /// - SQLite: VALUES (?1, ?2), (?1, ?3), ...
+    /// - Postgres: SELECT $1, unnest($2::text[])
+    /// 
+    /// Current implementation uses per-event inserts, which is fine for typical use cases.
+    pub async fn insert_memory_sources(
+        &self,
+        memory_id: &str,
+        event_ids: &[String],
+    ) -> Result<()> {
+        if event_ids.is_empty() {
+            return Ok(());
+        }
+
+        match self {
+            Self::Sqlite(pool) => {
+                for event_id in event_ids {
+                    sqlx::query(
+                        "INSERT OR IGNORE INTO memory_sources (memory_id, event_id) VALUES (?1, ?2)"
+                    )
+                    .bind(memory_id)
+                    .bind(event_id)
+                    .execute(pool)
+                    .await?;
+                }
+            }
+            Self::Postgres(pool) => {
+                for event_id in event_ids {
+                    sqlx::query(
+                        "INSERT INTO memory_sources (memory_id, event_id) VALUES ($1, $2) ON CONFLICT DO NOTHING"
+                    )
+                    .bind(memory_id)
+                    .bind(event_id)
+                    .execute(pool)
+                    .await?;
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn sqlite_row_to_memory(row: &sqlx::sqlite::SqliteRow) -> Result<Memory> {
-        let is_active: i32 = row.try_get("is_active")?;
+        // This is intentional for backward compatibility - we prefer defaults over crashes
+        let is_active: i32 = row.try_get("is_active").unwrap_or(1);
         
         Ok(Memory {
             id: row.try_get("id")?,
             agent_id: row.try_get("agent_id")?,
-            user_id: row.try_get("user_id")?,
-            session_id: row.try_get("session_id")?,
+            user_id: row.try_get("user_id").ok(),
+            session_id: row.try_get("session_id").ok(),
             memory_type: row.try_get("memory_type")?,
             text: row.try_get("text")?,
-            embedding: row.try_get("embedding")?,
-            importance: row.try_get("importance")?,
+            importance: row.try_get("importance").unwrap_or(0.5),
             is_active: is_active != 0,
-            supersedes_id: row.try_get("supersedes_id")?,
-            source_event_ids: row.try_get("source_event_ids")?,
-            metadata: row.try_get("metadata")?,
-            last_accessed_at: row.try_get("last_accessed_at")?,
+            supersedes_id: row.try_get("supersedes_id").ok(),
+            source_event_ids: row.try_get("source_event_ids").ok(),
+            metadata: row.try_get("metadata").ok(),
+            last_accessed_at: row.try_get("last_accessed_at").ok(),
             created_at: row.try_get("created_at")?,
-            expires_at: row.try_get("expires_at")?,
+            expires_at: row.try_get("expires_at").ok(),
         })
     }
 
     fn postgres_row_to_memory(row: &sqlx::postgres::PgRow) -> Result<Memory> {
+        // Use .ok() for truly optional columns that might be added in future schemas.
         Ok(Memory {
             id: row.try_get("id")?,
             agent_id: row.try_get("agent_id")?,
-            user_id: row.try_get("user_id")?,
-            session_id: row.try_get("session_id")?,
+            user_id: row.try_get("user_id").ok(),
+            session_id: row.try_get("session_id").ok(),
             memory_type: row.try_get("memory_type")?,
             text: row.try_get("text")?,
-            embedding: row.try_get("embedding")?,
-            importance: row.try_get("importance")?,
-            is_active: row.try_get("is_active")?,
-            supersedes_id: row.try_get("supersedes_id")?,
-            source_event_ids: row.try_get("source_event_ids")?,
-            metadata: row.try_get("metadata")?,
-            last_accessed_at: row.try_get("last_accessed_at")?,
+            importance: row.try_get("importance").unwrap_or(0.5),
+            is_active: row.try_get("is_active").unwrap_or(true),
+            supersedes_id: row.try_get("supersedes_id").ok(),
+            source_event_ids: row.try_get("source_event_ids").ok(),
+            metadata: row.try_get("metadata").ok(),
+            last_accessed_at: row.try_get("last_accessed_at").ok(),
             created_at: row.try_get("created_at")?,
-            expires_at: row.try_get("expires_at")?,
+            expires_at: row.try_get("expires_at").ok(),
         })
     }
 }
-

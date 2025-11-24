@@ -5,68 +5,284 @@ use crate::types::*;
 use crate::vector_store::VectorStore;
 use anyhow::Result;
 use chrono::Utc;
+use dialoguer::{Input, Select};
+use directories::ProjectDirs;
 use serde_json::json;
 use serde_json::Value;
 use sqlx::Row;
+use std::fs;
 use std::io::{self, BufRead, BufReader, Write};
+use std::path::PathBuf;
 use std::sync::Arc;
 use uuid::Uuid;
+
+
+fn config_path() -> Result<PathBuf> {
+    let proj = ProjectDirs::from("com", "memento", "memento")
+        .ok_or_else(|| anyhow::anyhow!("Cannot resolve config dir"))?;
+    Ok(proj.config_dir().join("config.json"))
+}
+
+fn save_config(db_type: &str, db_url: &str, provider: &str, model: &str, embedding_dim: Option<usize>) -> Result<()> {
+    let path = config_path()?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let mut json = serde_json::json!({
+        "database_type": db_type,
+        "database_url": db_url,
+        "embedding_provider": provider,
+        "embedding_model": model
+    });
+    if let Some(dim) = embedding_dim {
+        json["embedding_dim"] = serde_json::json!(dim);
+    }
+    fs::write(path, serde_json::to_vec_pretty(&json)?)?;
+    eprintln!("⚠️  Note: API keys are not stored in config. Use environment variables (MEMENTO_OPENAI_API_KEY or OPENAI_API_KEY) for sensitive credentials.");
+    Ok(())
+}
+
+fn load_config_from_file() -> Option<serde_json::Value> {
+    let path = config_path().ok()?;
+    let bytes = fs::read(path).ok()?;
+    serde_json::from_slice(&bytes).ok()
+}
+
+pub fn run_init() -> Result<()> {
+    let (db_type, db_url) = prompt_database_config()?;
+    let (provider, model, embedding_dim) = prompt_embedding_config()?;
+    save_config(&db_type, &db_url, &provider, &model, embedding_dim)?;
+    eprintln!("✅ Configuration saved! You can now run: memento mcp");
+    Ok(())
+}
+
+fn prompt_database_config() -> Result<(String, String)> {
+    let db_types = vec!["sqlite", "postgresql"];
+    let db_type_idx = Select::new()
+        .with_prompt("Select database type")
+        .items(&db_types)
+        .default(0)
+        .interact()?;
+    
+    let db_type = db_types[db_type_idx].to_string();
+    
+    let db_url = if db_type == "postgresql" {
+        Input::<String>::new()
+            .with_prompt("Enter PostgreSQL connection URL")
+            .with_initial_text("postgresql://user:password@localhost:5432/memento")
+            .interact_text()?
+    } else {
+        Input::<String>::new()
+            .with_prompt("Enter SQLite database path")
+            .with_initial_text("./memento.db")
+            .interact_text()?
+    };
+    
+    Ok((db_type, db_url))
+}
+
+fn prompt_embedding_config() -> Result<(String, String, Option<usize>)> {
+    let providers = vec!["local", "openai"];
+    let provider_idx = Select::new()
+        .with_prompt("Select embedding provider")
+        .items(&providers)
+        .default(0)
+        .interact()?;
+    
+    let provider = providers[provider_idx].to_string();
+    
+    let default_model = if provider == "openai" {
+        "text-embedding-3-small"
+    } else {
+        "Xenova/all-MiniLM-L6-v2"
+    };
+    
+    let model = Input::<String>::new()
+        .with_prompt("Embedding model")
+        .with_initial_text(default_model)
+        .interact_text()?;
+    
+    let default_dim = if provider == "openai" { 1536 } else { 384 };
+    let dim_str = Input::<String>::new()
+        .with_prompt("Embedding dimension (press Enter for default)")
+        .with_initial_text(default_dim.to_string())
+        .allow_empty(true)
+        .interact_text()?;
+    
+    let embedding_dim = if dim_str.is_empty() {
+        None
+    } else {
+        dim_str.parse().ok()
+    };
+    
+    if provider == "openai" {
+        eprintln!("⚠️  Note: Set MEMENTO_OPENAI_API_KEY or OPENAI_API_KEY environment variable for OpenAI API access.");
+    }
+    
+    Ok((provider, model, embedding_dim))
+}
 
 pub async fn start_mcp_server(
     database_type: Option<String>,
     database_url: Option<String>,
+    embedding_dim_override: Option<usize>,
 ) -> Result<()> {
-    let db_type = database_type
-        .or_else(|| std::env::var("MEMENTO_DATABASE_TYPE").ok())
-        .unwrap_or_else(|| "sqlite".to_string());
+    let file_cfg = load_config_from_file();
+    let file_db_type = file_cfg.as_ref()
+        .and_then(|v| v.get("database_type"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let file_db_url = file_cfg.as_ref()
+        .and_then(|v| v.get("database_url"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let file_provider = file_cfg.as_ref()
+        .and_then(|v| v.get("embedding_provider"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let file_model = file_cfg.as_ref()
+        .and_then(|v| v.get("embedding_model"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    
+    let file_dim = file_cfg.as_ref()
+        .and_then(|v| v.get("embedding_dim"))
+        .and_then(|v| v.as_u64())
+        .map(|d| d as usize);
 
-    let db_url = database_url
-        .or_else(|| std::env::var("MEMENTO_DATABASE_URL").ok())
-        .or_else(|| {
-            match db_type.as_str() {
-                "postgresql" | "postgres" => {
-                    std::env::var("DATABASE_URL").ok()
+    let (db_type, db_url) = if database_type.is_some() || database_url.is_some() {
+        let db_type = database_type
+            .or_else(|| std::env::var("MEMENTO_DATABASE_TYPE").ok())
+            .unwrap_or_else(|| "sqlite".to_string());
+        
+        let db_url = database_url
+            .or_else(|| std::env::var("MEMENTO_DATABASE_URL").ok())
+            .or_else(|| {
+                match db_type.as_str() {
+                    "postgresql" | "postgres" => {
+                        std::env::var("DATABASE_URL").ok()
+                    }
+                    _ => Some("./memento.db".to_string())
                 }
-                _ => Some("./memento.db".to_string())
+            });
+        
+        let db_url = match db_type.as_str() {
+            "postgresql" | "postgres" => {
+                let url = db_url.ok_or_else(|| {
+                    anyhow::anyhow!("PostgreSQL requires database URL")
+                })?;
+                
+                if !url.starts_with("postgresql://") && !url.starts_with("postgres://") {
+                    format!("postgresql://{}", url)
+                } else {
+                    url
+                }
             }
-        });
-
-    let db_url = match db_type.as_str() {
-        "postgresql" | "postgres" => {
-            let url = db_url.ok_or_else(|| {
-                anyhow::anyhow!(
-                    "PostgreSQL requires database URL. Set MEMENTO_DATABASE_URL or DATABASE_URL environment variable, or use --database-url flag"
-                )
-            })?;
-            
-            if !url.starts_with("postgresql://") && !url.starts_with("postgres://") {
-                format!("postgresql://{}", url)
-            } else {
-                url
+            _ => {
+                let path = db_url.unwrap_or_else(|| "./memento.db".to_string());
+                let path = path.strip_prefix("sqlite://").unwrap_or(&path);
+                format!("sqlite://{}", path)
             }
-        }
-        _ => {
-            let path = db_url.unwrap_or_else(|| "./memento.db".to_string());
-            let path = path.strip_prefix("sqlite://").unwrap_or(&path);
-            format!("sqlite://{}", path)
+        };
+        
+        (db_type, db_url)
+    } else {
+        let db_type = std::env::var("MEMENTO_DATABASE_TYPE")
+            .ok()
+            .or_else(|| file_db_type)
+            .unwrap_or_else(|| "sqlite".to_string());
+        
+        let db_url = std::env::var("MEMENTO_DATABASE_URL")
+            .ok()
+            .or_else(|| file_db_url)
+            .or_else(|| {
+                match db_type.as_str() {
+                    "postgresql" | "postgres" => {
+                        std::env::var("DATABASE_URL").ok()
+                    }
+                    _ => Some("./memento.db".to_string())
+                }
+            });
+        
+        if let Some(url) = db_url {
+            let db_url = match db_type.as_str() {
+                "postgresql" | "postgres" => {
+                    if !url.starts_with("postgresql://") && !url.starts_with("postgres://") {
+                        format!("postgresql://{}", url)
+                    } else {
+                        url
+                    }
+                }
+                _ => {
+                    let path = url.strip_prefix("sqlite://").unwrap_or(&url);
+                    format!("sqlite://{}", path)
+                }
+            };
+            (db_type, db_url)
+        } else {
+            let config_path_str = config_path().ok().map(|p| format!("{:?}", p));
+            return Err(anyhow::anyhow!(
+                "Memento MCP server is not configured. Run `memento init` in a terminal. Config path: {:?}",
+                config_path_str
+            ));
         }
     };
 
     eprintln!("📦 Using database: {} ({})", db_url, db_type);
 
-    let mut config = Config::from_env();
-    config.database_url = db_url.clone();
+    let provider = std::env::var("MEMENTO_EMBEDDING_PROVIDER")
+        .ok()
+        .or_else(|| std::env::var("EMBEDDING_PROVIDER").ok())
+        .or_else(|| file_provider)
+        .unwrap_or_else(|| "local".to_string());
     
-    let db = DatabaseClient::new(&db_url).await?;
-
+    let api_key = if provider == "openai" {
+        std::env::var("MEMENTO_OPENAI_API_KEY")
+            .ok()
+            .or_else(|| std::env::var("OPENAI_API_KEY").ok())
+    } else {
+        None
+    };
+    
+    if provider == "openai" && api_key.is_none() {
+        let config_path_str = config_path().ok().map(|p| format!("{:?}", p));
+        return Err(anyhow::anyhow!(
+            "OpenAI embedding provider requires API key. Set MEMENTO_OPENAI_API_KEY or OPENAI_API_KEY environment variable. Config path: {:?}",
+            config_path_str
+        ));
+    }
+    
+    let model = std::env::var("MEMENTO_EMBEDDING_MODEL")
+        .ok()
+        .or_else(|| std::env::var("EMBEDDING_MODEL").ok())
+        .or_else(|| file_model)
+        .unwrap_or_else(|| {
+            let config = Config::from_env();
+            config.embedding_model
+        });
+    
+    let embedding_dim = embedding_dim_override
+        .or_else(|| {
+            std::env::var("MEMENTO_EMBEDDING_DIM")
+                .ok()
+                .or_else(|| std::env::var("EMBEDDING_DIM").ok())
+                .and_then(|s| s.parse().ok())
+        })
+        .or(file_dim)
+        .or_else(|| {
+            let config = Config::from_env();
+            config.embedding_dim
+        });
+    
     let embedding_provider = get_embedding_provider(
-        match config.embedding_provider {
-            crate::config::EmbeddingProvider::OpenAi => "openai",
-            crate::config::EmbeddingProvider::Local => "local",
-        },
-        config.openai_api_key.clone(),
-        Some(config.embedding_model.clone()),
+        provider.as_str(),
+        api_key,
+        Some(model),
+        embedding_dim,
     )?;
+    
+    let db_dim = embedding_dim.or(Some(embedding_provider.dim()));
+    let db = DatabaseClient::new_with_dim(&db_url, db_dim).await?;
 
     let vector_store = Arc::new(VectorStore::new(db.clone(), embedding_provider));
 
@@ -77,7 +293,17 @@ pub async fn start_mcp_server(
     eprintln!("🤝 Memento MCP server running (stdio)");
 
     for line in reader.lines() {
-        let line = line?;
+        let line = match line {
+            Ok(l) => l,
+            Err(e) => {
+                // EOF or broken pipe on stdin - graceful shutdown
+                if e.kind() == io::ErrorKind::UnexpectedEof {
+                    break;
+                }
+                return Err(e.into());
+            }
+        };
+        
         if line.is_empty() {
             continue;
         }
@@ -85,9 +311,29 @@ pub async fn start_mcp_server(
         let request: Value = serde_json::from_str(&line)?;
         let response = handle_mcp_request(&request, &db, &vector_store).await?;
 
-        serde_json::to_writer(&mut stdout, &response)?;
-        stdout.write_all(b"\n")?;
-        stdout.flush()?;
+        // Handle broken pipe gracefully
+        if let Err(e) = serde_json::to_writer(&mut stdout, &response) {
+            // serde_json::Error can wrap io::Error, check if it's a broken pipe
+            let error_msg = e.to_string();
+            if error_msg.contains("Broken pipe") || error_msg.contains("broken pipe") {
+                break; // Client closed stdout - graceful shutdown
+            }
+            return Err(anyhow::anyhow!("JSON serialization error: {}", e));
+        }
+        
+        if let Err(e) = stdout.write_all(b"\n") {
+            if e.kind() == io::ErrorKind::BrokenPipe {
+                break; // Client closed stdout - graceful shutdown
+            }
+            return Err(e.into());
+        }
+        
+        if let Err(e) = stdout.flush() {
+            if e.kind() == io::ErrorKind::BrokenPipe {
+                break; // Client closed stdout - graceful shutdown
+            }
+            return Err(e.into());
+        }
     }
 
     Ok(())
@@ -163,7 +409,11 @@ async fn handle_mcp_request(
                         "required": ["agent_id"]
                     }
                 }
-            ]
+            ],
+            "serverInfo": {
+                "name": "memento",
+                "version": env!("CARGO_PKG_VERSION")
+            }
         })),
         "tools/call" => {
             let tool_name = params["name"].as_str().unwrap_or("");
@@ -202,7 +452,6 @@ async fn handle_mcp_request(
         })),
     };
 
-    // Wrap result in JSON-RPC response format
     match result {
         Ok(result_data) => {
             Ok(json!({
@@ -237,7 +486,6 @@ async fn handle_store(
         return Err(anyhow::anyhow!("text is required"));
     }
 
-    // Use default event_type if not provided (same default used for event creation)
     let event_type = args.event_type.unwrap_or_else(|| "user_msg".to_string());
 
     let event_id = Uuid::new_v4().to_string();
@@ -253,15 +501,19 @@ async fn handle_store(
             .as_ref()
             .map(|m| serde_json::to_string(m).unwrap_or_default()),
         created_at: Utc::now(),
+        summarized_at: None,
     };
 
     db.insert_event(&event).await?;
 
     let mut memory_id: Option<String> = None;
-    // Create durable memory if text is substantial and event_type is one that should be stored
-    if args.text.len() > 10
+    let word_count = args.text.split_whitespace().count();
+    let should_promote = word_count >= 6
+        && args.text.len() >= 40
         && matches!(event_type.as_str(), "user_msg" | "thought")
-    {
+        && !args.text.trim().ends_with('?'); // Questions are often ephemeral
+    
+    if should_promote {
         let memory = Memory {
             id: Uuid::new_v4().to_string(),
             agent_id: args.agent_id.clone(),
@@ -269,7 +521,6 @@ async fn handle_store(
             session_id: args.session_id.clone(),
             memory_type: "episodic".to_string(),
             text: args.text.clone(),
-            embedding: None,
             importance: 0.5,
             is_active: true,
             supersedes_id: None,
@@ -303,21 +554,28 @@ async fn handle_store(
 
         // VectorStore::add() computes the embedding (since we pass None) and then
         // UPDATEs the memories.embedding column, so embeddings are properly stored
-        vector_store
-            .add(&mem_id, &args.text, None, vector_metadata)
-            .await?;
+        // If embedding add fails, deactivate the memory to avoid inconsistent state
+        if let Err(e) = vector_store.add(&mem_id, &args.text, None, vector_metadata).await {
+            // Cleanup: deactivate memory if embedding storage fails
+            let _ = db.soft_delete_memory(&mem_id).await;
+            return Err(anyhow::anyhow!("Failed to store embedding: {}", e));
+        }
+
+        // TODO: Insert provenance links via db.insert_memory_sources(&mem_id, &[event_id]).await?
+        // Currently not called - memory_sources table exists but is not populated
 
         memory_id = Some(mem_id);
     }
 
+    let payload = json!({
+        "ok": true,
+        "event_id": event_id,
+        "memory_id": memory_id
+    });
     Ok(json!({
         "content": [{
             "type": "text",
-            "text": json!({
-                "ok": true,
-                "event_id": event_id,
-                "memory_id": memory_id
-            })
+            "text": serde_json::to_string(&payload)?
         }]
     }))
 }
@@ -345,7 +603,6 @@ async fn handle_search(
         )
         .await?;
 
-    // If vector search returns no results, fall back to keyword search
     if vector_results.is_empty() {
         vector_results = keyword_search_fallback(
             db,
@@ -357,12 +614,21 @@ async fn handle_search(
         .await?;
     }
 
+    let memory_ids: Vec<String> = vector_results.iter().map(|r| r.memory_id.clone()).collect();
+    let memories = db.get_memories_by_ids(&memory_ids).await?;
+    
+    for memory_id in &memory_ids {
+        if let Some(memory) = memories.get(memory_id) {
+            if memory.is_active {
+                let _ = db.update_memory_access(&memory.id).await;
+            }
+        }
+    }
+
     let mut results = Vec::new();
     for result in vector_results {
-        if let Some(memory) = db.get_memory(&result.memory_id).await? {
+        if let Some(memory) = memories.get(&result.memory_id) {
             if memory.is_active {
-                db.update_memory_access(&memory.id).await?;
-
                 let mut metadata = if let Some(meta_str) = &memory.metadata {
                     serde_json::from_str(meta_str).unwrap_or_default()
                 } else {
@@ -383,13 +649,14 @@ async fn handle_search(
         }
     }
 
+    let payload = json!({
+        "ok": true,
+        "results": results
+    });
     Ok(json!({
         "content": [{
             "type": "text",
-            "text": json!({
-                "ok": true,
-                "results": results
-            })
+            "text": serde_json::to_string(&payload)?
         }]
     }))
 }
@@ -411,41 +678,29 @@ async fn keyword_search_fallback(
 
     match db {
         DatabaseClient::Sqlite(pool) => {
-            let mut sql_query = sqlx::query(
-                "SELECT id, text, metadata FROM memories 
-                 WHERE is_active = 1 AND text LIKE ?1"
-            )
-            .bind(&search_pattern);
+            let mut sql = String::from(
+                "SELECT id, text, metadata FROM memories WHERE is_active = 1 AND text LIKE ?1 AND (expires_at IS NULL OR expires_at > datetime('now'))"
+            );
+            let mut binds: Vec<String> = vec![search_pattern.clone()];
+            let mut bind_idx = 2;
 
             if let Some(agent_id) = agent_id {
-                sql_query = sqlx::query(
-                    "SELECT id, text, metadata FROM memories 
-                     WHERE is_active = 1 AND text LIKE ?1 AND agent_id = ?2"
-                )
-                .bind(&search_pattern)
-                .bind(agent_id);
+                sql.push_str(&format!(" AND agent_id = ?{}", bind_idx));
+                binds.push(agent_id.to_string());
+                bind_idx += 1;
             }
 
             if let Some(user_id) = user_id {
-                if agent_id.is_some() {
-                    sql_query = sqlx::query(
-                        "SELECT id, text, metadata FROM memories 
-                         WHERE is_active = 1 AND text LIKE ?1 AND agent_id = ?2 AND user_id = ?3"
-                    )
-                    .bind(&search_pattern)
-                    .bind(agent_id.unwrap())
-                    .bind(user_id);
-                } else {
-                    sql_query = sqlx::query(
-                        "SELECT id, text, metadata FROM memories 
-                         WHERE is_active = 1 AND text LIKE ?1 AND user_id = ?2"
-                    )
-                    .bind(&search_pattern)
-                    .bind(user_id);
-                }
+                sql.push_str(&format!(" AND user_id = ?{}", bind_idx));
+                binds.push(user_id.to_string());
             }
 
-            let rows = sql_query.fetch_all(pool).await?;
+            let mut q = sqlx::query(&sql);
+            for b in &binds {
+                q = q.bind(b);
+            }
+
+            let rows = q.fetch_all(pool).await?;
             
             for row in rows.into_iter().take(k) {
                 let memory_id: String = row.try_get(&"id")?;
@@ -469,41 +724,29 @@ async fn keyword_search_fallback(
             }
         }
         DatabaseClient::Postgres(pool) => {
-            let mut sql_query = sqlx::query(
-                "SELECT id, text, metadata FROM memories 
-                 WHERE is_active = TRUE AND text ILIKE $1"
-            )
-            .bind(&search_pattern);
+            let mut sql = String::from(
+                "SELECT id, text, metadata FROM memories WHERE is_active = TRUE AND text ILIKE $1 AND (expires_at IS NULL OR expires_at > NOW())"
+            );
+            let mut binds: Vec<String> = vec![search_pattern.clone()];
+            let mut bind_idx = 2;
 
             if let Some(agent_id) = agent_id {
-                sql_query = sqlx::query(
-                    "SELECT id, text, metadata FROM memories 
-                     WHERE is_active = TRUE AND text ILIKE $1 AND agent_id = $2"
-                )
-                .bind(&search_pattern)
-                .bind(agent_id);
+                sql.push_str(&format!(" AND agent_id = ${}", bind_idx));
+                binds.push(agent_id.to_string());
+                bind_idx += 1;
             }
 
             if let Some(user_id) = user_id {
-                if agent_id.is_some() {
-                    sql_query = sqlx::query(
-                        "SELECT id, text, metadata FROM memories 
-                         WHERE is_active = TRUE AND text ILIKE $1 AND agent_id = $2 AND user_id = $3"
-                    )
-                    .bind(&search_pattern)
-                    .bind(agent_id.unwrap())
-                    .bind(user_id);
-                } else {
-                    sql_query = sqlx::query(
-                        "SELECT id, text, metadata FROM memories 
-                         WHERE is_active = TRUE AND text ILIKE $1 AND user_id = $2"
-                    )
-                    .bind(&search_pattern)
-                    .bind(user_id);
-                }
+                sql.push_str(&format!(" AND user_id = ${}", bind_idx));
+                binds.push(user_id.to_string());
             }
 
-            let rows = sql_query.fetch_all(pool).await?;
+            let mut q = sqlx::query(&sql);
+            for b in &binds {
+                q = q.bind(b);
+            }
+
+            let rows = q.fetch_all(pool).await?;
             
             for row in rows.into_iter().take(k) {
                 let memory_id: String = row.try_get(&"id")?;
@@ -528,7 +771,6 @@ async fn keyword_search_fallback(
         }
     }
 
-    // Sort by score descending
     results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
     
     Ok(results)
@@ -537,15 +779,16 @@ async fn keyword_search_fallback(
 async fn handle_summarize(_args: SummarizeToolArgs) -> Result<Value> {
     // TODO: Implement LLM-based summarization
     // This should:
+    let payload = json!({
+        "ok": true,
+        "created": 0,
+        "updated": 0,
+        "message": "Summarization coming soon"
+    });
     Ok(json!({
         "content": [{
             "type": "text",
-            "text": json!({
-                "ok": true,
-                "created": 0,
-                "updated": 0,
-                "message": "Summarization coming soon"
-            })
+            "text": serde_json::to_string(&payload)?
         }]
     }))
 }
@@ -593,13 +836,14 @@ async fn handle_forget(
         return Err(anyhow::anyhow!("Either memory_id or query is required"));
     }
 
+    let payload = json!({
+        "ok": true,
+        "deleted": deleted
+    });
     Ok(json!({
         "content": [{
             "type": "text",
-            "text": json!({
-                "ok": true,
-                "deleted": deleted
-            })
+            "text": serde_json::to_string(&payload)?
         }]
     }))
 }

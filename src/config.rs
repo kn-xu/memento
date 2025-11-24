@@ -7,6 +7,7 @@ pub struct Config {
     pub embedding_provider: EmbeddingProvider,
     pub openai_api_key: Option<String>,
     pub embedding_model: String,
+    pub embedding_dim: Option<usize>,
     pub port: u16,
     pub host: String,
 }
@@ -50,6 +51,10 @@ impl Config {
             embedding_model: env::var("MEMENTO_EMBEDDING_MODEL")
                 .or_else(|_| env::var("EMBEDDING_MODEL"))
                 .unwrap_or_else(|_| "Xenova/all-MiniLM-L6-v2".to_string()),
+            embedding_dim: env::var("MEMENTO_EMBEDDING_DIM")
+                .or_else(|_| env::var("EMBEDDING_DIM"))
+                .ok()
+                .and_then(|s| s.parse().ok()),
             port: env::var("MEMENTO_PORT")
                 .or_else(|_| env::var("PORT"))
                 .unwrap_or_else(|_| "8000".to_string())

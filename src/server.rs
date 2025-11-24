@@ -1,6 +1,5 @@
-use crate::config::Config;
 use crate::database::{DatabaseClient, Memory, MemoryEvent};
-use crate::embeddings::get_embedding_provider;
+use crate::embeddings::EmbeddingProvider;
 use crate::types::*;
 use crate::vector_store::VectorStore;
 use anyhow::Result;
@@ -21,18 +20,12 @@ pub struct AppState {
     pub vector_store: Arc<VectorStore>,
 }
 
-pub async fn start_server(db: DatabaseClient, host: String, port: u16) -> Result<()> {
-    let config = Config::from_env();
-    
-    let embedding_provider = get_embedding_provider(
-        match config.embedding_provider {
-            crate::config::EmbeddingProvider::OpenAi => "openai",
-            crate::config::EmbeddingProvider::Local => "local",
-        },
-        config.openai_api_key.clone(),
-        Some(config.embedding_model.clone()),
-    )?;
-
+pub async fn start_server(
+    db: DatabaseClient,
+    embedding_provider: Box<dyn EmbeddingProvider + Send + Sync>,
+    host: String,
+    port: u16,
+) -> Result<()> {
     let vector_store = Arc::new(VectorStore::new(db.clone(), embedding_provider));
     
     let app_state = Arc::new(AppState {
@@ -97,6 +90,7 @@ async fn store_memory(
             .as_ref()
             .map(|m| serde_json::to_string(m).unwrap_or_default()),
         created_at: Utc::now(),
+        summarized_at: None,
     };
 
     state.db.insert_event(&event).await.map_err(|e| {
@@ -120,7 +114,6 @@ async fn store_memory(
             session_id: payload.session_id.clone(),
             memory_type: "episodic".to_string(),
             text: text.clone(),
-            embedding: None,
             importance: 0.5,
             is_active: true,
             supersedes_id: None,
@@ -159,18 +152,15 @@ async fn store_memory(
             }
         }
 
-        state
-            .vector_store
-            .add(&mem_id, &text, None, vector_metadata)
-            .await
-            .map_err(|e| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ErrorResponse {
-                        error: e.to_string(),
-                    }),
-                )
-            })?;
+        if let Err(e) = state.vector_store.add(&mem_id, &text, None, vector_metadata).await {
+            let _ = state.db.soft_delete_memory(&mem_id).await;
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Failed to store embedding: {}", e),
+                }),
+            ));
+        }
 
         memory_id = Some(mem_id);
     }
