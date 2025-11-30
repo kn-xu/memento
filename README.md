@@ -1,6 +1,12 @@
-# 🚀 Memento — Universal Agent Memory Engine (Rust)
+![Memento Logo](assets/logo.png)
+
+# Universal Agent Memory Engine
 
 A lightweight, local-first memory service for AI agents, built with Rust for maximum performance and safety.
+
+[Features](#features) • [Quick Start](#quick-start) • [REST API](#-rest-api) • [MCP Integration](#-mcp-integration)
+
+---
 
 ## Features
 
@@ -61,6 +67,8 @@ OPENAI_API_KEY=sk-...
 
 ## 🔌 REST API
 
+> **Note:** The REST API is optional. It's provided for non-MCP integrations such as web applications, scripts, or services that communicate over HTTP. If you're using Cursor or another MCP-compatible client, you only need the [MCP Integration](#-mcp-integration).
+
 ### 1) Store memory/event
 
 ```bash
@@ -115,9 +123,11 @@ POST /memory/forget
 ### Quick Setup
 
 1. **Build the binary** (one-time setup):
+
    ```bash
    cargo build --release
    ```
+
    The binary will be at `target/release/memento` (or `target/release/memento.exe` on Windows).
 
 2. **Configure in Cursor** - Add to `~/.cursor/mcp.json` (see examples below)
@@ -224,6 +234,7 @@ Add to `~/.cursor/mcp.json`:
 ### How It Works
 
 Once configured, the MCP server will:
+
 1. **Start automatically** when Cursor launches
 2. **Connect to your database** using the settings you provided
 3. **Make tools available** to AI assistants for storing and retrieving memories
@@ -233,14 +244,17 @@ No additional setup or manual steps required!
 ### Configuration Options
 
 **Defaults (no config needed):**
+
 - Database type: SQLite
 - Database location: `./memento.db` (relative to where the binary runs)
 
 **To customize:**
+
 - Set `MEMENTO_DATABASE_TYPE` and `MEMENTO_DATABASE_URL` in the `env` object, OR
 - Use `--database-type` and `--database-url` in the `args` array
 
 **Configuration Priority** (highest to lowest):
+
 1. CLI arguments (`--database-type`, `--database-url`)
 2. Environment variables (`MEMENTO_DATABASE_TYPE`, `MEMENTO_DATABASE_URL`, or `DATABASE_URL`)
 3. Defaults (SQLite at `./memento.db`)
@@ -248,18 +262,21 @@ No additional setup or manual steps required!
 #### Environment Variables
 
 **Database:**
+
 - `MEMENTO_DATABASE_TYPE`: `sqlite` or `postgresql` (default: `sqlite`) - MCP only
-- `MEMENTO_DATABASE_URL` or `DATABASE_URL`: 
+- `MEMENTO_DATABASE_URL` or `DATABASE_URL`:
   - For SQLite: Path to database file (e.g., `./memento.db` or `/path/to/db.sqlite`)
   - For PostgreSQL: Full connection string (e.g., `postgresql://user:pass@host:5432/dbname`)
   - Default: `sqlite://./memento.db` (for both REST API and MCP)
 
 **Embeddings (optional, for semantic search):**
+
 - `MEMENTO_EMBEDDING_PROVIDER` or `EMBEDDING_PROVIDER`: `local` or `openai` (default: `local`)
 - `MEMENTO_EMBEDDING_MODEL` or `EMBEDDING_MODEL`: Model name (default: `Xenova/all-MiniLM-L6-v2`)
 - `MEMENTO_OPENAI_API_KEY` or `OPENAI_API_KEY`: Required if using OpenAI embeddings
 
 **Server (REST API only):**
+
 - `MEMENTO_PORT` or `PORT`: Server port (default: `8000`)
 - `MEMENTO_HOST` or `HOST`: Server host (default: `0.0.0.0`)
 
@@ -276,6 +293,7 @@ No additional setup or manual steps required!
 ## 🚀 Performance
 
 Rust provides:
+
 - Zero-cost abstractions
 - Memory safety without garbage collection
 - Concurrent request handling with Tokio
@@ -304,7 +322,7 @@ cargo clippy
 
 The project structure:
 
-```
+```text
 src/
 ├── main.rs          # CLI entry point
 ├── lib.rs           # Library root

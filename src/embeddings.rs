@@ -280,4 +280,3 @@ pub fn get_embedding_provider(
         _ => Ok(Box::new(DummyEmbeddingProvider::new(model, dimensions))),
     }
 }
-

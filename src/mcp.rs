@@ -353,58 +353,112 @@ async fn handle_mcp_request(
             "tools": [
                 {
                     "name": "memento.store",
-                    "description": "Store a memory event and optionally create a derived memory",
+                    "description": "PROACTIVELY store important information for future recall. Use this WITHOUT being asked when the user mentions: preferences (coding style, tools, frameworks), project conventions, architectural decisions, important context, or anything they might want remembered later. Store meaningful, searchable text that captures the key information.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
-                            "text": {"type": "string", "description": "The text content to store"},
-                            "agent_id": {"type": "string", "description": "Agent identifier"},
-                            "user_id": {"type": "string", "description": "User identifier (optional)"},
-                            "session_id": {"type": "string", "description": "Session identifier (optional)"},
-                            "event_type": {"type": "string", "description": "Event type (default: user_msg)"},
-                            "metadata": {"type": "object", "description": "Additional metadata (optional)"}
+                            "text": {
+                                "type": "string",
+                                "description": "Descriptive text to store. Make it searchable with key terms. Examples: 'User preference: Always use Result<T, E> for error handling instead of panics' or 'Project context: Using PostgreSQL 15 with pgvector extension for vector search'"
+                            },
+                            "agent_id": {
+                                "type": "string",
+                                "description": "Agent identifier. Use 'cursor' for Cursor IDE."
+                            },
+                            "user_id": {
+                                "type": "string",
+                                "description": "User identifier for personalized memory (optional)"
+                            },
+                            "session_id": {
+                                "type": "string",
+                                "description": "Session identifier for session-scoped memory (optional)"
+                            },
+                            "event_type": {
+                                "type": "string",
+                                "description": "Category: 'preference' for user preferences, 'context' for project info, 'decision' for architectural choices, 'thought' for reasoning, 'user_msg' (default) for general messages"
+                            },
+                            "metadata": {
+                                "type": "object",
+                                "description": "Additional metadata for filtering. Example: {\"tags\": [\"preference\", \"error-handling\"], \"project\": \"myapp\"}"
+                            }
                         },
                         "required": ["text", "agent_id"]
                     }
                 },
                 {
                     "name": "memento.search",
-                    "description": "Semantic search for memories",
+                    "description": "Search stored memories when the user asks to recall something, references past conversations, or explicitly requests information that may have been stored previously. Use when the user says things like 'what did I say about...', 'remember when...', 'what's my preference for...', or asks about previously discussed topics.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
-                            "query": {"type": "string", "description": "Search query"},
-                            "agent_id": {"type": "string", "description": "Agent identifier"},
-                            "user_id": {"type": "string", "description": "User identifier (optional)"},
-                            "k": {"type": "number", "description": "Number of results (default: 5)"},
-                            "filters": {"type": "object", "description": "Additional filters (optional)"}
+                            "query": {
+                                "type": "string",
+                                "description": "Natural language search query. Be specific: 'error handling preference', 'database configuration', 'coding style'. The search is semantic - it finds conceptually related memories."
+                            },
+                            "agent_id": {
+                                "type": "string",
+                                "description": "Agent identifier. Use 'cursor' for Cursor IDE."
+                            },
+                            "user_id": {
+                                "type": "string",
+                                "description": "User identifier to filter memories for a specific user (optional)"
+                            },
+                            "k": {
+                                "type": "number",
+                                "description": "Number of results to return (default: 5). Use higher values (10-20) for broader searches."
+                            },
+                            "filters": {
+                                "type": "object",
+                                "description": "Filter by metadata fields. Example: {\"memory_type\": \"preference\"}"
+                            }
                         },
                         "required": ["query", "agent_id"]
                     }
                 },
                 {
                     "name": "memento.summarize",
-                    "description": "Summarize recent events into durable memories",
+                    "description": "Summarize recent events into durable memories. Use periodically to consolidate conversation history into long-term memory. (Coming soon - not yet implemented)",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
-                            "agent_id": {"type": "string", "description": "Agent identifier"},
-                            "user_id": {"type": "string", "description": "User identifier (optional)"},
-                            "session_id": {"type": "string", "description": "Session identifier (optional)"}
+                            "agent_id": {
+                                "type": "string",
+                                "description": "Agent identifier. Use 'cursor' for Cursor IDE."
+                            },
+                            "user_id": {
+                                "type": "string",
+                                "description": "User identifier (optional)"
+                            },
+                            "session_id": {
+                                "type": "string",
+                                "description": "Session identifier to summarize a specific session (optional)"
+                            }
                         },
                         "required": ["agent_id"]
                     }
                 },
                 {
                     "name": "memento.forget",
-                    "description": "Forget a memory by ID or query",
+                    "description": "Remove memories when user explicitly requests it ('forget that', 'delete my preference about...', 'I changed my mind about...') or when information becomes outdated. Provide either a specific memory_id OR a query to find and remove matching memories.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
-                            "agent_id": {"type": "string", "description": "Agent identifier"},
-                            "user_id": {"type": "string", "description": "User identifier (optional)"},
-                            "memory_id": {"type": "string", "description": "Memory ID to forget (optional)"},
-                            "query": {"type": "string", "description": "Query to find memories to forget (optional)"}
+                            "agent_id": {
+                                "type": "string",
+                                "description": "Agent identifier. Use 'cursor' for Cursor IDE."
+                            },
+                            "user_id": {
+                                "type": "string",
+                                "description": "User identifier (optional)"
+                            },
+                            "memory_id": {
+                                "type": "string",
+                                "description": "Specific memory ID to forget. Use this when you know the exact memory to remove."
+                            },
+                            "query": {
+                                "type": "string",
+                                "description": "Search query to find memories to forget. Use this when user wants to forget 'everything about X'. Matches and removes all related memories."
+                            }
                         },
                         "required": ["agent_id"]
                     }
@@ -412,7 +466,8 @@ async fn handle_mcp_request(
             ],
             "serverInfo": {
                 "name": "memento",
-                "version": env!("CARGO_PKG_VERSION")
+                "version": env!("CARGO_PKG_VERSION"),
+                "description": "Persistent memory engine for AI assistants. Proactively store user preferences and important context without being asked."
             }
         })),
         "tools/call" => {

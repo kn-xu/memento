@@ -10,4 +10,3 @@ pub mod vector_store;
 pub use config::Config;
 pub use database::{DatabaseClient, Memory, MemoryEvent};
 pub use types::*;
-

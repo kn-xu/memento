@@ -80,7 +80,8 @@ impl DatabaseClient {
         }
     }
 
-    pub(crate) fn normalize_sqlite_url(url: &str) -> String {
+    #[doc(hidden)]
+    pub fn normalize_sqlite_url(url: &str) -> String {
         let mut normalized = url.to_string();
         
         if normalized == ":memory:" || normalized == "sqlite::memory:" {
