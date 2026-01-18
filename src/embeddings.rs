@@ -1,7 +1,29 @@
+//! Embedding providers for generating vector embeddings from text.
+
 use anyhow::Result;
 use async_trait::async_trait;
 use serde_json::json;
 use sha2::{Sha256, Digest};
+
+// =============================================================================
+// Shared Utilities
+// =============================================================================
+
+/// Normalize an embedding vector to unit length (L2 normalization).
+/// This ensures consistent cosine similarity calculations.
+#[inline]
+pub fn normalize_embedding(embedding: &mut [f32]) {
+    let norm = embedding.iter().map(|x| x * x).sum::<f32>().sqrt();
+    if norm > 0.0 {
+        for x in embedding.iter_mut() {
+            *x /= norm;
+        }
+    }
+}
+
+// =============================================================================
+// Traits
+// =============================================================================
 
 #[async_trait]
 pub trait EmbeddingProvider: Send + Sync {
@@ -9,6 +31,10 @@ pub trait EmbeddingProvider: Send + Sync {
     async fn embed(&self, text: &str) -> Result<Vec<f32>>;
     async fn embed_batch(&self, texts: &[String]) -> Result<Vec<Vec<f32>>>;
 }
+
+// =============================================================================
+// Dummy Provider (for testing)
+// =============================================================================
 
 pub struct DummyEmbeddingProvider {
     dim: usize,
@@ -22,21 +48,14 @@ impl DummyEmbeddingProvider {
         }
     }
 
-    async fn get_embedding(&self, text: &str) -> Result<Vec<f32>> {
+    fn generate_embedding(&self, text: &str) -> Vec<f32> {
         let mut embedding = vec![0.0f32; self.dim];
         let hash = Sha256::digest(text.as_bytes());
         for i in 0..self.dim {
             embedding[i] = hash[i % hash.len()] as f32 / 255.0;
         }
-        
-        let norm = embedding.iter().map(|x| x * x).sum::<f32>().sqrt();
-        if norm > 0.0 {
-            for x in &mut embedding {
-                *x /= norm;
-            }
-        }
-        
-        Ok(embedding)
+        normalize_embedding(&mut embedding);
+        embedding
     }
 }
 
@@ -47,17 +66,17 @@ impl EmbeddingProvider for DummyEmbeddingProvider {
     }
 
     async fn embed(&self, text: &str) -> Result<Vec<f32>> {
-        self.get_embedding(text).await
+        Ok(self.generate_embedding(text))
     }
 
     async fn embed_batch(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
-        let mut results = Vec::with_capacity(texts.len());
-        for text in texts {
-            results.push(self.get_embedding(text).await?);
-        }
-        Ok(results)
+        Ok(texts.iter().map(|t| self.generate_embedding(t)).collect())
     }
 }
+
+// =============================================================================
+// OpenAI Provider
+// =============================================================================
 
 pub struct OpenAIEmbeddingProvider {
     api_key: String,
@@ -122,14 +141,7 @@ impl EmbeddingProvider for OpenAIEmbeddingProvider {
         let response = self.post_with_retry(request_body).await?;
         let data = self.parse_response_data(response).await?;
         let mut embedding = self.parse_embedding_from_json(&data[0]["embedding"])?;
-        
-        let norm = embedding.iter().map(|x| x * x).sum::<f32>().sqrt();
-        if norm > 0.0 {
-            for x in &mut embedding {
-                *x /= norm;
-            }
-        }
-        
+        normalize_embedding(&mut embedding);
         Ok(embedding)
     }
 
@@ -154,14 +166,7 @@ impl EmbeddingProvider for OpenAIEmbeddingProvider {
                 }
                 
                 let mut embedding = self.parse_embedding_from_json(&item["embedding"])?;
-                
-                let norm = embedding.iter().map(|x| x * x).sum::<f32>().sqrt();
-                if norm > 0.0 {
-                    for x in &mut embedding {
-                        *x /= norm;
-                    }
-                }
-                
+                normalize_embedding(&mut embedding);
                 Ok((index, embedding))
             })
             .collect::<Result<Vec<_>>>()?;
@@ -266,6 +271,11 @@ impl OpenAIEmbeddingProvider {
     }
 }
 
+// =============================================================================
+// Factory
+// =============================================================================
+
+/// Create an embedding provider based on the provider type.
 pub fn get_embedding_provider(
     provider_type: &str,
     api_key: Option<String>,

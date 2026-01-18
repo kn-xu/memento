@@ -1,8 +1,18 @@
+//! Database abstraction layer supporting SQLite and PostgreSQL.
+//!
+//! Provides a unified interface for memory storage operations across
+//! both database backends.
+
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use sqlx::{FromRow, PgPool, SqlitePool, Row};
+use sqlx::{FromRow, PgPool, Row, SqlitePool};
 
+// =============================================================================
+// Data Models
+// =============================================================================
+
+/// A raw interaction event before processing into searchable memory.
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct MemoryEvent {
     pub id: String,
@@ -17,6 +27,7 @@ pub struct MemoryEvent {
     pub summarized_at: Option<DateTime<Utc>>,
 }
 
+/// A searchable memory record with embedding support.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Memory {
     pub id: String,
@@ -35,6 +46,11 @@ pub struct Memory {
     pub expires_at: Option<DateTime<Utc>>,
 }
 
+// =============================================================================
+// Database Client
+// =============================================================================
+
+/// Database client supporting SQLite and PostgreSQL backends.
 #[derive(Clone)]
 pub enum DatabaseClient {
     Sqlite(SqlitePool),
@@ -712,45 +728,108 @@ impl DatabaseClient {
         Ok(())
     }
 
+    /// Get the source event IDs for a memory (provenance tracking).
+    pub async fn get_memory_sources(&self, memory_id: &str) -> Result<Vec<String>> {
+        match self {
+            Self::Sqlite(pool) => {
+                let rows: Vec<(String,)> = sqlx::query_as(
+                    "SELECT event_id FROM memory_sources WHERE memory_id = ?1"
+                )
+                .bind(memory_id)
+                .fetch_all(pool)
+                .await?;
+                Ok(rows.into_iter().map(|(id,)| id).collect())
+            }
+            Self::Postgres(pool) => {
+                let rows: Vec<(String,)> = sqlx::query_as(
+                    "SELECT event_id FROM memory_sources WHERE memory_id = $1"
+                )
+                .bind(memory_id)
+                .fetch_all(pool)
+                .await?;
+                Ok(rows.into_iter().map(|(id,)| id).collect())
+            }
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Row Conversion Helpers
+    // -------------------------------------------------------------------------
+    // These functions are nearly identical but must be separate due to sqlx's
+    // type system requiring concrete row types. The only difference is how
+    // `is_active` is handled (SQLite returns i32, Postgres returns bool).
+
     fn sqlite_row_to_memory(row: &sqlx::sqlite::SqliteRow) -> Result<Memory> {
-        // This is intentional for backward compatibility - we prefer defaults over crashes
         let is_active: i32 = row.try_get("is_active").unwrap_or(1);
-        
-        Ok(Memory {
-            id: row.try_get("id")?,
-            agent_id: row.try_get("agent_id")?,
-            user_id: row.try_get("user_id").ok(),
-            session_id: row.try_get("session_id").ok(),
-            memory_type: row.try_get("memory_type")?,
-            text: row.try_get("text")?,
-            importance: row.try_get("importance").unwrap_or(0.5),
-            is_active: is_active != 0,
-            supersedes_id: row.try_get("supersedes_id").ok(),
-            source_event_ids: row.try_get("source_event_ids").ok(),
-            metadata: row.try_get("metadata").ok(),
-            last_accessed_at: row.try_get("last_accessed_at").ok(),
-            created_at: row.try_get("created_at")?,
-            expires_at: row.try_get("expires_at").ok(),
-        })
+        Self::build_memory_from_row_data(
+            row.try_get("id")?,
+            row.try_get("agent_id")?,
+            row.try_get("user_id").ok(),
+            row.try_get("session_id").ok(),
+            row.try_get("memory_type")?,
+            row.try_get("text")?,
+            row.try_get("importance").unwrap_or(0.5),
+            is_active != 0,
+            row.try_get("supersedes_id").ok(),
+            row.try_get("source_event_ids").ok(),
+            row.try_get("metadata").ok(),
+            row.try_get("last_accessed_at").ok(),
+            row.try_get("created_at")?,
+            row.try_get("expires_at").ok(),
+        )
     }
 
     fn postgres_row_to_memory(row: &sqlx::postgres::PgRow) -> Result<Memory> {
-        // Use .ok() for truly optional columns that might be added in future schemas.
+        Self::build_memory_from_row_data(
+            row.try_get("id")?,
+            row.try_get("agent_id")?,
+            row.try_get("user_id").ok(),
+            row.try_get("session_id").ok(),
+            row.try_get("memory_type")?,
+            row.try_get("text")?,
+            row.try_get("importance").unwrap_or(0.5),
+            row.try_get("is_active").unwrap_or(true),
+            row.try_get("supersedes_id").ok(),
+            row.try_get("source_event_ids").ok(),
+            row.try_get("metadata").ok(),
+            row.try_get("last_accessed_at").ok(),
+            row.try_get("created_at")?,
+            row.try_get("expires_at").ok(),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn build_memory_from_row_data(
+        id: String,
+        agent_id: String,
+        user_id: Option<String>,
+        session_id: Option<String>,
+        memory_type: String,
+        text: String,
+        importance: f64,
+        is_active: bool,
+        supersedes_id: Option<String>,
+        source_event_ids: Option<String>,
+        metadata: Option<String>,
+        last_accessed_at: Option<DateTime<Utc>>,
+        created_at: DateTime<Utc>,
+        expires_at: Option<DateTime<Utc>>,
+    ) -> Result<Memory> {
         Ok(Memory {
-            id: row.try_get("id")?,
-            agent_id: row.try_get("agent_id")?,
-            user_id: row.try_get("user_id").ok(),
-            session_id: row.try_get("session_id").ok(),
-            memory_type: row.try_get("memory_type")?,
-            text: row.try_get("text")?,
-            importance: row.try_get("importance").unwrap_or(0.5),
-            is_active: row.try_get("is_active").unwrap_or(true),
-            supersedes_id: row.try_get("supersedes_id").ok(),
-            source_event_ids: row.try_get("source_event_ids").ok(),
-            metadata: row.try_get("metadata").ok(),
-            last_accessed_at: row.try_get("last_accessed_at").ok(),
-            created_at: row.try_get("created_at")?,
-            expires_at: row.try_get("expires_at").ok(),
+            id,
+            agent_id,
+            user_id,
+            session_id,
+            memory_type,
+            text,
+            importance,
+            is_active,
+            supersedes_id,
+            source_event_ids,
+            metadata,
+            last_accessed_at,
+            created_at,
+            expires_at,
         })
     }
 }

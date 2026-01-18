@@ -95,6 +95,11 @@ async fn simulate_store(
         .await
         .map_err(|e| e.to_string())?;
 
+    // Insert provenance links
+    db.insert_memory_sources(&memory_id, &[event_id.clone()])
+        .await
+        .map_err(|e| e.to_string())?;
+
     Ok((event_id, memory_id))
 }
 
@@ -526,6 +531,92 @@ async fn test_system_store_with_rich_metadata() {
     assert!(stored_meta.contains_key("nested"));
 }
 
+// ============================================================================
+// Provenance System Tests
+// ============================================================================
+
+#[tokio::test]
+async fn test_system_memory_provenance_tracking() {
+    let (db, vector_store) = setup_mcp_env().await;
+
+    // Store a memory
+    let args = StoreToolArgs {
+        text: "User prefers vim keybindings".to_string(),
+        agent_id: "cursor".to_string(),
+        user_id: Some("dev".to_string()),
+        session_id: None,
+        event_type: Some("preference".to_string()),
+        metadata: None,
+    };
+    let (event_id, memory_id) = simulate_store(&db, &vector_store, args).await.unwrap();
+
+    // Verify provenance is tracked
+    let sources = db.get_memory_sources(&memory_id).await.unwrap();
+    assert_eq!(sources.len(), 1);
+    assert_eq!(sources[0], event_id);
+}
+
+#[tokio::test]
+async fn test_system_memory_provenance_multiple_stores() {
+    let (db, vector_store) = setup_mcp_env().await;
+
+    // Store multiple memories and verify each has correct provenance
+    let mut pairs = Vec::new();
+    for i in 1..=5 {
+        let args = StoreToolArgs {
+            text: format!("Memory number {}", i),
+            agent_id: "cursor".to_string(),
+            user_id: None,
+            session_id: None,
+            event_type: None,
+            metadata: None,
+        };
+        let (event_id, memory_id) = simulate_store(&db, &vector_store, args).await.unwrap();
+        pairs.push((event_id, memory_id));
+    }
+
+    // Verify each memory points to its source event
+    for (event_id, memory_id) in pairs {
+        let sources = db.get_memory_sources(&memory_id).await.unwrap();
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0], event_id);
+    }
+}
+
+#[tokio::test]
+async fn test_system_provenance_isolation() {
+    let (db, vector_store) = setup_mcp_env().await;
+
+    // Different users store memories
+    let (alice_event, alice_mem) = simulate_store(&db, &vector_store, StoreToolArgs {
+        text: "Alice's memory".to_string(),
+        agent_id: "cursor".to_string(),
+        user_id: Some("alice".to_string()),
+        session_id: None,
+        event_type: None,
+        metadata: None,
+    }).await.unwrap();
+
+    let (bob_event, bob_mem) = simulate_store(&db, &vector_store, StoreToolArgs {
+        text: "Bob's memory".to_string(),
+        agent_id: "cursor".to_string(),
+        user_id: Some("bob".to_string()),
+        session_id: None,
+        event_type: None,
+        metadata: None,
+    }).await.unwrap();
+
+    // Verify provenance is isolated
+    let alice_sources = db.get_memory_sources(&alice_mem).await.unwrap();
+    assert_eq!(alice_sources, vec![alice_event.clone()]);
+
+    let bob_sources = db.get_memory_sources(&bob_mem).await.unwrap();
+    assert_eq!(bob_sources, vec![bob_event.clone()]);
+
+    // No cross-contamination
+    assert!(!alice_sources.contains(&bob_event));
+    assert!(!bob_sources.contains(&alice_event));
+}
 
 // ============================================================================
 // Summarization System Tests

@@ -1,20 +1,53 @@
+//! MCP (Model Context Protocol) server implementation.
+//!
+//! Handles JSON-RPC requests over stdio for tool invocations like
+//! memento.store, memento.search, memento.forget, etc.
+
 use crate::config::Config;
 use crate::database::{DatabaseClient, Memory, MemoryEvent};
 use crate::embeddings::get_embedding_provider;
+use crate::prompts::format_summarize_instructions;
 use crate::types::*;
 use crate::vector_store::VectorStore;
 use anyhow::Result;
 use chrono::Utc;
 use dialoguer::{Input, Select};
 use directories::ProjectDirs;
-use serde_json::json;
-use serde_json::Value;
+use serde_json::{json, Value};
 use sqlx::Row;
 use std::fs;
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
 use uuid::Uuid;
+
+// =============================================================================
+// MCP Response Helpers
+// =============================================================================
+
+/// Build an MCP tool response with text content.
+fn mcp_text_response<T: serde::Serialize>(payload: &T) -> Result<Value> {
+    Ok(json!({
+        "content": [{
+            "type": "text",
+            "text": serde_json::to_string(payload)?
+        }]
+    }))
+}
+
+/// Build an MCP tool response with pretty-printed text content.
+fn mcp_text_response_pretty<T: serde::Serialize>(payload: &T) -> Result<Value> {
+    Ok(json!({
+        "content": [{
+            "type": "text",
+            "text": serde_json::to_string_pretty(payload)?
+        }]
+    }))
+}
+
+// =============================================================================
+// Configuration
+// =============================================================================
 
 
 fn config_path() -> Result<PathBuf> {
@@ -644,22 +677,16 @@ async fn handle_store(
             return Err(anyhow::anyhow!("Failed to store embedding: {}", e));
         }
 
-        // TODO: Insert provenance links via db.insert_memory_sources(&mem_id, &[event_id]).await?
-        // Currently not called - memory_sources table exists but is not populated
+        // Insert provenance links to track which events created this memory
+        db.insert_memory_sources(&mem_id, &[event_id.clone()]).await?;
 
         memory_id = Some(mem_id);
     }
 
-    let payload = json!({
+    mcp_text_response(&json!({
         "ok": true,
         "event_id": event_id,
         "memory_id": memory_id
-    });
-    Ok(json!({
-        "content": [{
-            "type": "text",
-            "text": serde_json::to_string(&payload)?
-        }]
     }))
 }
 
@@ -732,15 +759,9 @@ async fn handle_search(
         }
     }
 
-    let payload = json!({
+    mcp_text_response(&json!({
         "ok": true,
         "results": results
-    });
-    Ok(json!({
-        "content": [{
-            "type": "text",
-            "text": serde_json::to_string(&payload)?
-        }]
     }))
 }
 
@@ -878,16 +899,10 @@ async fn handle_summarize(
     ).await?;
 
     if events.is_empty() {
-        let payload = json!({
+        return mcp_text_response(&json!({
             "ok": true,
             "has_events": false,
             "message": "No unsummarized events found. Nothing to summarize."
-        });
-        return Ok(json!({
-            "content": [{
-                "type": "text",
-                "text": serde_json::to_string(&payload)?
-            }]
         }));
     }
 
@@ -902,54 +917,19 @@ async fn handle_summarize(
         )
     }).collect();
 
-    let instructions = format!(
-        r#"## Summarization Task
-
-I found {} unsummarized event(s) that need to be consolidated into long-term memory.
-
-### Events to Summarize:
-{}
-
-### Instructions:
-1. **Analyze** the events above and identify key information worth remembering:
-   - User preferences and decisions
-   - Project context and conventions  
-   - Important facts or requirements
-   - Patterns in user behavior
-
-2. **Call `memento.store`** for each distinct piece of information you want to preserve:
-   - Use descriptive, searchable text
-   - Set appropriate `event_type`: "preference", "context", "decision", etc.
-   - Add relevant tags in metadata
-
-3. **Call `memento.mark_summarized`** with the event IDs to mark them as processed:
-   ```json
-   {{
-     "agent_id": "{}",
-     "event_ids": {:?}
-   }}
-   ```
-
-This prevents these events from being re-processed in future summarization calls."#,
+    let instructions = format_summarize_instructions(
         events.len(),
-        events_text.join("\n"),
-        args.agent_id,
-        event_ids
+        &events_text.join("\n"),
+        &args.agent_id,
+        &event_ids,
     );
 
-    let payload = json!({
+    mcp_text_response_pretty(&json!({
         "ok": true,
         "has_events": true,
         "event_count": events.len(),
         "event_ids": event_ids,
         "instructions": instructions
-    });
-
-    Ok(json!({
-        "content": [{
-            "type": "text", 
-            "text": serde_json::to_string_pretty(&payload)?
-        }]
     }))
 }
 
@@ -967,17 +947,10 @@ async fn handle_mark_summarized(
 
     db.mark_events_summarized(&args.agent_id, &args.event_ids).await?;
 
-    let payload = json!({
+    mcp_text_response(&json!({
         "ok": true,
         "marked": args.event_ids.len(),
         "message": format!("Marked {} event(s) as summarized", args.event_ids.len())
-    });
-
-    Ok(json!({
-        "content": [{
-            "type": "text",
-            "text": serde_json::to_string(&payload)?
-        }]
     }))
 }
 
@@ -1024,15 +997,9 @@ async fn handle_forget(
         return Err(anyhow::anyhow!("Either memory_id or query is required"));
     }
 
-    let payload = json!({
+    mcp_text_response(&json!({
         "ok": true,
         "deleted": deleted
-    });
-    Ok(json!({
-        "content": [{
-            "type": "text",
-            "text": serde_json::to_string(&payload)?
-        }]
     }))
 }
 
