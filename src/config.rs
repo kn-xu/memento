@@ -8,8 +8,6 @@ pub struct Config {
     pub openai_api_key: Option<String>,
     pub embedding_model: String,
     pub embedding_dim: Option<usize>,
-    pub port: u16,
-    pub host: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -55,15 +53,6 @@ impl Config {
                 .or_else(|_| env::var("EMBEDDING_DIM"))
                 .ok()
                 .and_then(|s| s.parse().ok()),
-            port: env::var("MEMENTO_PORT")
-                .or_else(|_| env::var("PORT"))
-                .unwrap_or_else(|_| "8000".to_string())
-                .parse()
-                .unwrap_or(8000),
-            host: env::var("MEMENTO_HOST")
-                .or_else(|_| env::var("HOST"))
-                .unwrap_or_else(|_| "0.0.0.0".to_string()),
         }
     }
 }
-

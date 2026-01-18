@@ -3,7 +3,6 @@ pub mod config;
 pub mod database;
 pub mod embeddings;
 pub mod mcp;
-pub mod server;
 pub mod types;
 pub mod vector_store;
 

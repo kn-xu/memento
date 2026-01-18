@@ -112,6 +112,7 @@ pub struct SummarizeToolArgs {
     pub agent_id: String,
     pub user_id: Option<String>,
     pub session_id: Option<String>,
+    pub limit: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -122,3 +123,8 @@ pub struct ForgetToolArgs {
     pub query: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MarkSummarizedToolArgs {
+    pub agent_id: String,
+    pub event_ids: Vec<String>,
+}

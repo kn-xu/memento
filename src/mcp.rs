@@ -416,7 +416,7 @@ async fn handle_mcp_request(
                 },
                 {
                     "name": "memento.summarize",
-                    "description": "Summarize recent events into durable memories. Use periodically to consolidate conversation history into long-term memory. (Coming soon - not yet implemented)",
+                    "description": "Get unsummarized events that need to be consolidated into long-term memories. Returns events with instructions - YOU (the LLM) should analyze them, then call memento.store with a summary, and finally call memento.mark_summarized with the event IDs.",
                     "inputSchema": {
                         "type": "object",
                         "properties": {
@@ -431,9 +431,32 @@ async fn handle_mcp_request(
                             "session_id": {
                                 "type": "string",
                                 "description": "Session identifier to summarize a specific session (optional)"
+                            },
+                            "limit": {
+                                "type": "number",
+                                "description": "Maximum number of events to return (default: 50)"
                             }
                         },
                         "required": ["agent_id"]
+                    }
+                },
+                {
+                    "name": "memento.mark_summarized",
+                    "description": "Mark events as summarized after you have processed them and stored a summary via memento.store. Call this after successfully storing a summary to prevent re-processing the same events.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "agent_id": {
+                                "type": "string",
+                                "description": "Agent identifier. Use 'cursor' for Cursor IDE."
+                            },
+                            "event_ids": {
+                                "type": "array",
+                                "items": { "type": "string" },
+                                "description": "Array of event IDs to mark as summarized"
+                            }
+                        },
+                        "required": ["agent_id", "event_ids"]
                     }
                 },
                 {
@@ -488,7 +511,13 @@ async fn handle_mcp_request(
                 }
                 "memento.summarize" => {
                     match serde_json::from_value::<SummarizeToolArgs>(args.clone()) {
-                        Ok(args) => handle_summarize(args).await,
+                        Ok(args) => handle_summarize(db, args).await,
+                        Err(e) => Err(anyhow::anyhow!("Invalid arguments: {}", e)),
+                    }
+                }
+                "memento.mark_summarized" => {
+                    match serde_json::from_value::<MarkSummarizedToolArgs>(args.clone()) {
+                        Ok(args) => handle_mark_summarized(db, args).await,
                         Err(e) => Err(anyhow::anyhow!("Invalid arguments: {}", e)),
                     }
                 }
@@ -830,15 +859,120 @@ async fn keyword_search_fallback(
     Ok(results)
 }
 
-async fn handle_summarize(_args: SummarizeToolArgs) -> Result<Value> {
-    // TODO: Implement LLM-based summarization
-    // This should:
+async fn handle_summarize(
+    db: &DatabaseClient,
+    args: SummarizeToolArgs,
+) -> Result<Value> {
+    if args.agent_id.is_empty() {
+        return Err(anyhow::anyhow!("agent_id is required"));
+    }
+
+    let limit = args.limit.unwrap_or(50);
+    
+    // Get unsummarized events
+    let events = db.list_unsummarized_events(
+        &args.agent_id,
+        args.user_id.as_deref(),
+        args.session_id.as_deref(),
+        limit,
+    ).await?;
+
+    if events.is_empty() {
+        let payload = json!({
+            "ok": true,
+            "has_events": false,
+            "message": "No unsummarized events found. Nothing to summarize."
+        });
+        return Ok(json!({
+            "content": [{
+                "type": "text",
+                "text": serde_json::to_string(&payload)?
+            }]
+        }));
+    }
+
+    // Format events for the LLM
+    let event_ids: Vec<String> = events.iter().map(|e| e.id.clone()).collect();
+    let events_text: Vec<String> = events.iter().map(|e| {
+        format!(
+            "[{}] {}: {}",
+            e.created_at.format("%Y-%m-%d %H:%M"),
+            e.event_type,
+            e.content
+        )
+    }).collect();
+
+    let instructions = format!(
+        r#"## Summarization Task
+
+I found {} unsummarized event(s) that need to be consolidated into long-term memory.
+
+### Events to Summarize:
+{}
+
+### Instructions:
+1. **Analyze** the events above and identify key information worth remembering:
+   - User preferences and decisions
+   - Project context and conventions  
+   - Important facts or requirements
+   - Patterns in user behavior
+
+2. **Call `memento.store`** for each distinct piece of information you want to preserve:
+   - Use descriptive, searchable text
+   - Set appropriate `event_type`: "preference", "context", "decision", etc.
+   - Add relevant tags in metadata
+
+3. **Call `memento.mark_summarized`** with the event IDs to mark them as processed:
+   ```json
+   {{
+     "agent_id": "{}",
+     "event_ids": {:?}
+   }}
+   ```
+
+This prevents these events from being re-processed in future summarization calls."#,
+        events.len(),
+        events_text.join("\n"),
+        args.agent_id,
+        event_ids
+    );
+
     let payload = json!({
         "ok": true,
-        "created": 0,
-        "updated": 0,
-        "message": "Summarization coming soon"
+        "has_events": true,
+        "event_count": events.len(),
+        "event_ids": event_ids,
+        "instructions": instructions
     });
+
+    Ok(json!({
+        "content": [{
+            "type": "text", 
+            "text": serde_json::to_string_pretty(&payload)?
+        }]
+    }))
+}
+
+async fn handle_mark_summarized(
+    db: &DatabaseClient,
+    args: MarkSummarizedToolArgs,
+) -> Result<Value> {
+    if args.agent_id.is_empty() {
+        return Err(anyhow::anyhow!("agent_id is required"));
+    }
+
+    if args.event_ids.is_empty() {
+        return Err(anyhow::anyhow!("event_ids cannot be empty"));
+    }
+
+    db.mark_events_summarized(&args.agent_id, &args.event_ids).await?;
+
+    let payload = json!({
+        "ok": true,
+        "marked": args.event_ids.len(),
+        "message": format!("Marked {} event(s) as summarized", args.event_ids.len())
+    });
+
     Ok(json!({
         "content": [{
             "type": "text",

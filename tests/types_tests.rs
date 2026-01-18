@@ -1,173 +1,6 @@
-//! Tests for types module
+//! Tests for MCP types module
 
 use memento::types::*;
-
-#[test]
-fn test_store_request_serialization() {
-    let request = StoreRequest {
-        agent_id: "cursor".to_string(),
-        user_id: Some("user-123".to_string()),
-        session_id: None,
-        event_type: Some("user_msg".to_string()),
-        text: Some("Hello, world!".to_string()),
-        content: None,
-        metadata: None,
-    };
-
-    let json = serde_json::to_string(&request).unwrap();
-    let deserialized: StoreRequest = serde_json::from_str(&json).unwrap();
-
-    assert_eq!(deserialized.agent_id, "cursor");
-    assert_eq!(deserialized.user_id, Some("user-123".to_string()));
-    assert_eq!(deserialized.text, Some("Hello, world!".to_string()));
-}
-
-#[test]
-fn test_store_request_with_metadata() {
-    let mut metadata = Metadata::new();
-    metadata.insert(
-        "tags".to_string(),
-        serde_json::json!(["preference", "coding"]),
-    );
-
-    let request = StoreRequest {
-        agent_id: "cursor".to_string(),
-        user_id: None,
-        session_id: None,
-        event_type: None,
-        text: Some("I prefer Rust".to_string()),
-        content: None,
-        metadata: Some(metadata),
-    };
-
-    let json = serde_json::to_string(&request).unwrap();
-    assert!(json.contains("tags"));
-    assert!(json.contains("preference"));
-}
-
-#[test]
-fn test_search_request_default_k() {
-    let json = r#"{"agent_id": "cursor", "query": "test query"}"#;
-    let request: SearchRequest = serde_json::from_str(json).unwrap();
-
-    assert_eq!(request.k, 5); // default value
-}
-
-#[test]
-fn test_search_request_custom_k() {
-    let json = r#"{"agent_id": "cursor", "query": "test query", "k": 10}"#;
-    let request: SearchRequest = serde_json::from_str(json).unwrap();
-
-    assert_eq!(request.k, 10);
-}
-
-#[test]
-fn test_search_response_serialization() {
-    let mut metadata = Metadata::new();
-    metadata.insert("memory_type".to_string(), serde_json::json!("episodic"));
-
-    let response = SearchResponse {
-        ok: true,
-        results: vec![
-            SearchResult {
-                memory_id: "mem-001".to_string(),
-                text: "Test memory".to_string(),
-                score: 0.95,
-                metadata: metadata.clone(),
-            },
-            SearchResult {
-                memory_id: "mem-002".to_string(),
-                text: "Another memory".to_string(),
-                score: 0.85,
-                metadata: Metadata::new(),
-            },
-        ],
-    };
-
-    let json = serde_json::to_string(&response).unwrap();
-    let deserialized: SearchResponse = serde_json::from_str(&json).unwrap();
-
-    assert!(deserialized.ok);
-    assert_eq!(deserialized.results.len(), 2);
-    assert_eq!(deserialized.results[0].score, 0.95);
-}
-
-#[test]
-fn test_store_response_serialization() {
-    let response = StoreResponse {
-        ok: true,
-        event_id: "evt-123".to_string(),
-        memory_id: Some("mem-456".to_string()),
-    };
-
-    let json = serde_json::to_string(&response).unwrap();
-    let deserialized: StoreResponse = serde_json::from_str(&json).unwrap();
-
-    assert!(deserialized.ok);
-    assert_eq!(deserialized.event_id, "evt-123");
-    assert_eq!(deserialized.memory_id, Some("mem-456".to_string()));
-}
-
-#[test]
-fn test_forget_request_with_memory_id() {
-    let request = ForgetRequest {
-        agent_id: "cursor".to_string(),
-        user_id: None,
-        query: None,
-        memory_id: Some("mem-to-forget".to_string()),
-    };
-
-    let json = serde_json::to_string(&request).unwrap();
-    assert!(json.contains("mem-to-forget"));
-}
-
-#[test]
-fn test_forget_request_with_query() {
-    let request = ForgetRequest {
-        agent_id: "cursor".to_string(),
-        user_id: None,
-        query: Some("phone number".to_string()),
-        memory_id: None,
-    };
-
-    let json = serde_json::to_string(&request).unwrap();
-    assert!(json.contains("phone number"));
-}
-
-#[test]
-fn test_summarize_request_serialization() {
-    let request = SummarizeRequest {
-        agent_id: "cursor".to_string(),
-        user_id: Some("user-1".to_string()),
-        session_id: Some("session-1".to_string()),
-    };
-
-    let json = serde_json::to_string(&request).unwrap();
-    let deserialized: SummarizeRequest = serde_json::from_str(&json).unwrap();
-
-    assert_eq!(deserialized.agent_id, "cursor");
-    assert_eq!(deserialized.session_id, Some("session-1".to_string()));
-}
-
-#[test]
-fn test_health_response() {
-    let response = HealthResponse {
-        status: "ok".to_string(),
-    };
-
-    let json = serde_json::to_string(&response).unwrap();
-    assert!(json.contains("ok"));
-}
-
-#[test]
-fn test_error_response() {
-    let response = ErrorResponse {
-        error: "Something went wrong".to_string(),
-    };
-
-    let json = serde_json::to_string(&response).unwrap();
-    assert!(json.contains("Something went wrong"));
-}
 
 #[test]
 fn test_store_tool_args_deserialization() {
@@ -185,6 +18,21 @@ fn test_store_tool_args_deserialization() {
 }
 
 #[test]
+fn test_store_tool_args_with_metadata() {
+    let json = r#"{
+        "text": "I prefer Rust",
+        "agent_id": "cursor",
+        "metadata": {"tags": ["preference", "coding"]}
+    }"#;
+
+    let args: StoreToolArgs = serde_json::from_str(json).unwrap();
+    assert_eq!(args.text, "I prefer Rust");
+    assert!(args.metadata.is_some());
+    let meta = args.metadata.unwrap();
+    assert!(meta.contains_key("tags"));
+}
+
+#[test]
 fn test_search_tool_args_deserialization() {
     let json = r#"{
         "query": "coding preferences",
@@ -198,6 +46,87 @@ fn test_search_tool_args_deserialization() {
 }
 
 #[test]
+fn test_search_tool_args_default_k() {
+    let json = r#"{
+        "query": "test query",
+        "agent_id": "cursor"
+    }"#;
+
+    let args: SearchToolArgs = serde_json::from_str(json).unwrap();
+    assert!(args.k.is_none()); // k is optional, defaults handled in handler
+}
+
+#[test]
+fn test_summarize_tool_args_deserialization() {
+    let json = r#"{
+        "agent_id": "cursor",
+        "user_id": "user-1",
+        "limit": 100
+    }"#;
+
+    let args: SummarizeToolArgs = serde_json::from_str(json).unwrap();
+    assert_eq!(args.agent_id, "cursor");
+    assert_eq!(args.user_id, Some("user-1".to_string()));
+    assert_eq!(args.limit, Some(100));
+}
+
+#[test]
+fn test_forget_tool_args_with_memory_id() {
+    let json = r#"{
+        "agent_id": "cursor",
+        "memory_id": "mem-to-forget"
+    }"#;
+
+    let args: ForgetToolArgs = serde_json::from_str(json).unwrap();
+    assert_eq!(args.memory_id, Some("mem-to-forget".to_string()));
+    assert!(args.query.is_none());
+}
+
+#[test]
+fn test_forget_tool_args_with_query() {
+    let json = r#"{
+        "agent_id": "cursor",
+        "query": "phone number"
+    }"#;
+
+    let args: ForgetToolArgs = serde_json::from_str(json).unwrap();
+    assert_eq!(args.query, Some("phone number".to_string()));
+    assert!(args.memory_id.is_none());
+}
+
+#[test]
+fn test_mark_summarized_tool_args() {
+    let json = r#"{
+        "agent_id": "cursor",
+        "event_ids": ["evt-1", "evt-2", "evt-3"]
+    }"#;
+
+    let args: MarkSummarizedToolArgs = serde_json::from_str(json).unwrap();
+    assert_eq!(args.agent_id, "cursor");
+    assert_eq!(args.event_ids.len(), 3);
+    assert_eq!(args.event_ids[0], "evt-1");
+}
+
+#[test]
+fn test_search_result_serialization() {
+    let mut metadata = Metadata::new();
+    metadata.insert("memory_type".to_string(), serde_json::json!("episodic"));
+
+    let result = SearchResult {
+        memory_id: "mem-001".to_string(),
+        text: "Test memory".to_string(),
+        score: 0.95,
+        metadata,
+    };
+
+    let json = serde_json::to_string(&result).unwrap();
+    let deserialized: SearchResult = serde_json::from_str(&json).unwrap();
+
+    assert_eq!(deserialized.memory_id, "mem-001");
+    assert_eq!(deserialized.score, 0.95);
+}
+
+#[test]
 fn test_metadata_type() {
     let mut metadata: Metadata = Metadata::new();
     metadata.insert("key".to_string(), serde_json::json!("value"));
@@ -207,4 +136,3 @@ fn test_metadata_type() {
     assert_eq!(metadata.get("key").unwrap(), &serde_json::json!("value"));
     assert_eq!(metadata.get("number").unwrap(), &serde_json::json!(42));
 }
-

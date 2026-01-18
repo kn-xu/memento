@@ -34,15 +34,12 @@ fn test_config_serialization() {
         openai_api_key: None,
         embedding_model: "test-model".to_string(),
         embedding_dim: Some(384),
-        port: 8080,
-        host: "127.0.0.1".to_string(),
     };
 
     let json = serde_json::to_string(&config).unwrap();
     let deserialized: Config = serde_json::from_str(&json).unwrap();
 
     assert_eq!(deserialized.database_url, "sqlite://test.db");
-    assert_eq!(deserialized.port, 8080);
     assert_eq!(deserialized.embedding_dim, Some(384));
+    assert!(matches!(deserialized.embedding_provider, EmbeddingProvider::Local));
 }
-
