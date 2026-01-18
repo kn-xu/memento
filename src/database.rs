@@ -42,33 +42,18 @@ pub enum DatabaseClient {
 }
 
 impl DatabaseClient {
-    /// Create a new database client with default embedding dimension (384).
-    /// 
-    /// ⚠️  WARNING: 
-    /// - For SQLite: Works with default dimension (384) for DummyEmbeddingProvider.
-    /// - For PostgreSQL: This will error because Postgres requires explicit embedding_dim.
-    ///   Use `new_with_dim()` or `new_with_provider()` instead.
-    pub async fn new(database_url: &str) -> Result<Self> {
-        Self::new_with_dim(database_url, None).await
-    }
-
-    /// Create a new database client using the embedding provider's dimension.
-    /// This ensures the database schema matches the provider's embedding dimension automatically.
-    pub async fn new_with_provider(
-        database_url: &str,
-        provider: &dyn crate::embeddings::EmbeddingProvider,
-    ) -> Result<Self> {
-        Self::new_with_dim(database_url, Some(provider.dim())).await
-    }
-
-    pub async fn new_with_dim(database_url: &str, embedding_dim: Option<usize>) -> Result<Self> {
+    /// Create a new database client with the specified embedding dimension.
+    ///
+    /// # Arguments
+    /// * `database_url` - Connection URL (sqlite:// or postgresql://)
+    /// * `embedding_dim` - Embedding vector dimension (must match your embedding provider)
+    ///
+    /// # Example
+    /// ```ignore
+    /// let db = DatabaseClient::new("sqlite::memory:", 384).await?;
+    /// ```
+    pub async fn new(database_url: &str, embedding_dim: usize) -> Result<Self> {
         if database_url.starts_with("postgresql://") || database_url.starts_with("postgres://") {
-            let embedding_dim = embedding_dim.ok_or_else(|| {
-                anyhow::anyhow!(
-                    "embedding_dim is required for PostgreSQL. Pass the embedding provider's dimension \
-                    (e.g., provider.dim()) to avoid schema mismatches."
-                )
-            })?;
             let pool = PgPool::connect(database_url).await?;
             Self::init_postgres(&pool, Some(embedding_dim)).await?;
             Ok(Self::Postgres(pool))
@@ -78,6 +63,22 @@ impl DatabaseClient {
             Self::init_sqlite(&pool).await?;
             Ok(Self::Sqlite(pool))
         }
+    }
+
+    /// Create a new database client using the embedding provider's dimension.
+    /// This is the recommended constructor as it ensures the database schema
+    /// matches the provider's embedding dimension automatically.
+    ///
+    /// # Example
+    /// ```ignore
+    /// let provider = get_embedding_provider(&config)?;
+    /// let db = DatabaseClient::new_with_provider("sqlite::memory:", provider.as_ref()).await?;
+    /// ```
+    pub async fn new_with_provider(
+        database_url: &str,
+        provider: &dyn crate::embeddings::EmbeddingProvider,
+    ) -> Result<Self> {
+        Self::new(database_url, provider.dim()).await
     }
 
     #[doc(hidden)]
@@ -253,7 +254,7 @@ impl DatabaseClient {
             .execute(pool)
             .await?;
 
-        // embedding_dim is required for Postgres (enforced in new_with_dim)
+        // embedding_dim is required for Postgres (enforced in new())
         // Using expect() to fail fast if someone bypasses the guard
         let embedding_dim = embedding_dim.expect("embedding_dim required for Postgres");
         

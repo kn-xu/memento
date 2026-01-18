@@ -90,7 +90,7 @@ fn test_vector_search_result_creation() {
 
 #[tokio::test]
 async fn test_vector_store_add_and_search() {
-    let db = DatabaseClient::new("sqlite::memory:").await.unwrap();
+    let db = DatabaseClient::new("sqlite::memory:", 384).await.unwrap();
     let provider = Box::new(DummyEmbeddingProvider::new(None, Some(384)));
     let vector_store = VectorStore::new(db.clone(), provider);
 
@@ -146,7 +146,7 @@ async fn test_vector_store_add_and_search() {
 
 #[tokio::test]
 async fn test_vector_store_delete() {
-    let db = DatabaseClient::new("sqlite::memory:").await.unwrap();
+    let db = DatabaseClient::new("sqlite::memory:", 384).await.unwrap();
     let provider = Box::new(DummyEmbeddingProvider::new(None, Some(384)));
     let vector_store = VectorStore::new(db.clone(), provider);
 
@@ -194,7 +194,7 @@ async fn test_vector_store_delete() {
 
 #[tokio::test]
 async fn test_vector_store_search_with_filters() {
-    let db = DatabaseClient::new("sqlite::memory:").await.unwrap();
+    let db = DatabaseClient::new("sqlite::memory:", 384).await.unwrap();
     let provider = Box::new(DummyEmbeddingProvider::new(None, Some(384)));
     let vector_store = VectorStore::new(db.clone(), provider);
 

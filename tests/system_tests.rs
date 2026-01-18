@@ -13,7 +13,7 @@ use uuid::Uuid;
 
 /// Helper to setup a complete test environment matching MCP server setup
 async fn setup_mcp_env() -> (DatabaseClient, Arc<VectorStore>) {
-    let db = DatabaseClient::new("sqlite::memory:").await.unwrap();
+    let db = DatabaseClient::new("sqlite::memory:", 384).await.unwrap();
     let provider = Box::new(DummyEmbeddingProvider::new(None, Some(384)));
     let vector_store = Arc::new(VectorStore::new(db.clone(), provider));
     (db, vector_store)

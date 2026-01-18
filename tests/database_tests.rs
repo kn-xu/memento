@@ -46,13 +46,13 @@ fn test_normalize_sqlite_url_double_colon_format() {
 
 #[tokio::test]
 async fn test_sqlite_database_creation() {
-    let db = DatabaseClient::new("sqlite::memory:").await.unwrap();
+    let db = DatabaseClient::new("sqlite::memory:", 384).await.unwrap();
     assert!(matches!(db, DatabaseClient::Sqlite(_)));
 }
 
 #[tokio::test]
 async fn test_insert_and_get_event() {
-    let db = DatabaseClient::new("sqlite::memory:").await.unwrap();
+    let db = DatabaseClient::new("sqlite::memory:", 384).await.unwrap();
 
     let event = MemoryEvent {
         id: "evt-001".to_string(),
@@ -80,7 +80,7 @@ async fn test_insert_and_get_event() {
 
 #[tokio::test]
 async fn test_insert_and_get_memory() {
-    let db = DatabaseClient::new("sqlite::memory:").await.unwrap();
+    let db = DatabaseClient::new("sqlite::memory:", 384).await.unwrap();
 
     let memory = Memory {
         id: "mem-001".to_string(),
@@ -111,7 +111,7 @@ async fn test_insert_and_get_memory() {
 
 #[tokio::test]
 async fn test_soft_delete_memory() {
-    let db = DatabaseClient::new("sqlite::memory:").await.unwrap();
+    let db = DatabaseClient::new("sqlite::memory:", 384).await.unwrap();
 
     let memory = Memory {
         id: "mem-002".to_string(),
@@ -139,7 +139,7 @@ async fn test_soft_delete_memory() {
 
 #[tokio::test]
 async fn test_mark_events_summarized() {
-    let db = DatabaseClient::new("sqlite::memory:").await.unwrap();
+    let db = DatabaseClient::new("sqlite::memory:", 384).await.unwrap();
 
     for i in 1..=3 {
         let event = MemoryEvent {
@@ -179,7 +179,7 @@ async fn test_mark_events_summarized() {
 
 #[tokio::test]
 async fn test_get_memories_by_ids() {
-    let db = DatabaseClient::new("sqlite::memory:").await.unwrap();
+    let db = DatabaseClient::new("sqlite::memory:", 384).await.unwrap();
 
     for i in 1..=3 {
         let memory = Memory {
@@ -212,14 +212,14 @@ async fn test_get_memories_by_ids() {
 
 #[tokio::test]
 async fn test_get_nonexistent_memory() {
-    let db = DatabaseClient::new("sqlite::memory:").await.unwrap();
+    let db = DatabaseClient::new("sqlite::memory:", 384).await.unwrap();
     let result = db.get_memory("nonexistent").await.unwrap();
     assert!(result.is_none());
 }
 
 #[tokio::test]
 async fn test_update_memory_access() {
-    let db = DatabaseClient::new("sqlite::memory:").await.unwrap();
+    let db = DatabaseClient::new("sqlite::memory:", 384).await.unwrap();
 
     let memory = Memory {
         id: "mem-access".to_string(),

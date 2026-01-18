@@ -84,9 +84,8 @@ pub async fn init_database_and_provider(
     
     let inferred_dim = embedding_provider.dim();
     config.embedding_dim.get_or_insert(inferred_dim);
-    let db_dim = config.embedding_dim;
     
-    let db = DatabaseClient::new_with_dim(&config.database_url, db_dim).await?;
+    let db = DatabaseClient::new_with_provider(&config.database_url, embedding_provider.as_ref()).await?;
     
     Ok((config, db, embedding_provider))
 }

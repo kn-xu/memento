@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 /// Helper to create an in-memory test database with vector store
 async fn setup_test_env() -> (DatabaseClient, Arc<VectorStore>) {
-    let db = DatabaseClient::new("sqlite::memory:").await.unwrap();
+    let db = DatabaseClient::new("sqlite::memory:", 384).await.unwrap();
     let provider: Box<dyn EmbeddingProvider + Send + Sync> = 
         Box::new(DummyEmbeddingProvider::new(None, Some(384)));
     let vector_store = Arc::new(VectorStore::new(db.clone(), provider));

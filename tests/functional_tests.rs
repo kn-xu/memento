@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 #[tokio::test]
 async fn test_insert_duplicate_event_id_fails() {
-    let db = DatabaseClient::new("sqlite::memory:").await.unwrap();
+    let db = DatabaseClient::new("sqlite::memory:", 384).await.unwrap();
     
     let event = MemoryEvent {
         id: "dup-event".to_string(),
@@ -40,7 +40,7 @@ async fn test_insert_duplicate_event_id_fails() {
 
 #[tokio::test]
 async fn test_insert_duplicate_memory_id_fails() {
-    let db = DatabaseClient::new("sqlite::memory:").await.unwrap();
+    let db = DatabaseClient::new("sqlite::memory:", 384).await.unwrap();
     
     let memory = Memory {
         id: "dup-mem".to_string(),
@@ -66,7 +66,7 @@ async fn test_insert_duplicate_memory_id_fails() {
 
 #[tokio::test]
 async fn test_get_nonexistent_memory_returns_none() {
-    let db = DatabaseClient::new("sqlite::memory:").await.unwrap();
+    let db = DatabaseClient::new("sqlite::memory:", 384).await.unwrap();
     
     let result = db.get_memory("nonexistent-id").await.unwrap();
     assert!(result.is_none());
@@ -74,7 +74,7 @@ async fn test_get_nonexistent_memory_returns_none() {
 
 #[tokio::test]
 async fn test_soft_delete_nonexistent_memory_succeeds() {
-    let db = DatabaseClient::new("sqlite::memory:").await.unwrap();
+    let db = DatabaseClient::new("sqlite::memory:", 384).await.unwrap();
     
     // Should not error even if memory doesn't exist
     let result = db.soft_delete_memory("nonexistent-id").await;
@@ -83,7 +83,7 @@ async fn test_soft_delete_nonexistent_memory_succeeds() {
 
 #[tokio::test]
 async fn test_update_access_nonexistent_memory() {
-    let db = DatabaseClient::new("sqlite::memory:").await.unwrap();
+    let db = DatabaseClient::new("sqlite::memory:", 384).await.unwrap();
     
     // Should not error even if memory doesn't exist
     let result = db.update_memory_access("nonexistent-id").await;
@@ -92,7 +92,7 @@ async fn test_update_access_nonexistent_memory() {
 
 #[tokio::test]
 async fn test_empty_batch_retrieval() {
-    let db = DatabaseClient::new("sqlite::memory:").await.unwrap();
+    let db = DatabaseClient::new("sqlite::memory:", 384).await.unwrap();
     
     let ids: Vec<String> = vec![];
     let memories = db.get_memories_by_ids(&ids).await.unwrap();
@@ -101,7 +101,7 @@ async fn test_empty_batch_retrieval() {
 
 #[tokio::test]
 async fn test_batch_retrieval_with_nonexistent_ids() {
-    let db = DatabaseClient::new("sqlite::memory:").await.unwrap();
+    let db = DatabaseClient::new("sqlite::memory:", 384).await.unwrap();
     
     // Insert one real memory
     let memory = Memory {
@@ -136,7 +136,7 @@ async fn test_batch_retrieval_with_nonexistent_ids() {
 
 #[tokio::test]
 async fn test_list_unsummarized_with_no_events() {
-    let db = DatabaseClient::new("sqlite::memory:").await.unwrap();
+    let db = DatabaseClient::new("sqlite::memory:", 384).await.unwrap();
     
     let events = db.list_unsummarized_events("agent", None, None, 100).await.unwrap();
     assert!(events.is_empty());
@@ -144,7 +144,7 @@ async fn test_list_unsummarized_with_no_events() {
 
 #[tokio::test]
 async fn test_memory_with_all_optional_fields() {
-    let db = DatabaseClient::new("sqlite::memory:").await.unwrap();
+    let db = DatabaseClient::new("sqlite::memory:", 384).await.unwrap();
     
     let mut metadata = Metadata::new();
     metadata.insert("key".to_string(), serde_json::json!("value"));
@@ -201,7 +201,7 @@ async fn test_memory_with_all_optional_fields() {
 
 #[tokio::test]
 async fn test_search_empty_database() {
-    let db = DatabaseClient::new("sqlite::memory:").await.unwrap();
+    let db = DatabaseClient::new("sqlite::memory:", 384).await.unwrap();
     let provider = Box::new(DummyEmbeddingProvider::new(None, Some(384)));
     let vector_store = Arc::new(VectorStore::new(db, provider));
     
@@ -215,7 +215,7 @@ async fn test_search_empty_database() {
 
 #[tokio::test]
 async fn test_search_with_k_zero() {
-    let db = DatabaseClient::new("sqlite::memory:").await.unwrap();
+    let db = DatabaseClient::new("sqlite::memory:", 384).await.unwrap();
     let provider = Box::new(DummyEmbeddingProvider::new(None, Some(384)));
     let vector_store = Arc::new(VectorStore::new(db.clone(), provider));
     
@@ -250,7 +250,7 @@ async fn test_search_with_k_zero() {
 
 #[tokio::test]
 async fn test_search_with_large_k() {
-    let db = DatabaseClient::new("sqlite::memory:").await.unwrap();
+    let db = DatabaseClient::new("sqlite::memory:", 384).await.unwrap();
     let provider = Box::new(DummyEmbeddingProvider::new(None, Some(384)));
     let vector_store = Arc::new(VectorStore::new(db.clone(), provider));
     
@@ -289,7 +289,7 @@ async fn test_search_with_large_k() {
 
 #[tokio::test]
 async fn test_delete_nonexistent_embedding() {
-    let db = DatabaseClient::new("sqlite::memory:").await.unwrap();
+    let db = DatabaseClient::new("sqlite::memory:", 384).await.unwrap();
     let provider = Box::new(DummyEmbeddingProvider::new(None, Some(384)));
     let vector_store = Arc::new(VectorStore::new(db, provider));
     
@@ -300,7 +300,7 @@ async fn test_delete_nonexistent_embedding() {
 
 #[tokio::test]
 async fn test_search_with_empty_query() {
-    let db = DatabaseClient::new("sqlite::memory:").await.unwrap();
+    let db = DatabaseClient::new("sqlite::memory:", 384).await.unwrap();
     let provider = Box::new(DummyEmbeddingProvider::new(None, Some(384)));
     let vector_store = Arc::new(VectorStore::new(db.clone(), provider));
     
@@ -342,7 +342,7 @@ async fn test_search_with_empty_query() {
 
 #[tokio::test]
 async fn test_event_with_special_characters() {
-    let db = DatabaseClient::new("sqlite::memory:").await.unwrap();
+    let db = DatabaseClient::new("sqlite::memory:", 384).await.unwrap();
     
     let event = MemoryEvent {
         id: "special-evt".to_string(),
@@ -366,7 +366,7 @@ async fn test_event_with_special_characters() {
 
 #[tokio::test]
 async fn test_event_with_very_long_content() {
-    let db = DatabaseClient::new("sqlite::memory:").await.unwrap();
+    let db = DatabaseClient::new("sqlite::memory:", 384).await.unwrap();
     
     // Create a very long string (100KB)
     let long_content = "a".repeat(100_000);
@@ -391,7 +391,7 @@ async fn test_event_with_very_long_content() {
 
 #[tokio::test]
 async fn test_mark_summarized_empty_list() {
-    let db = DatabaseClient::new("sqlite::memory:").await.unwrap();
+    let db = DatabaseClient::new("sqlite::memory:", 384).await.unwrap();
     
     // Should not error with empty list
     let result = db.mark_events_summarized("test", &[]).await;
@@ -400,7 +400,7 @@ async fn test_mark_summarized_empty_list() {
 
 #[tokio::test]
 async fn test_mark_summarized_nonexistent_events() {
-    let db = DatabaseClient::new("sqlite::memory:").await.unwrap();
+    let db = DatabaseClient::new("sqlite::memory:", 384).await.unwrap();
     
     // Should not error with nonexistent IDs
     let result = db.mark_events_summarized(
@@ -416,7 +416,7 @@ async fn test_mark_summarized_nonexistent_events() {
 
 #[tokio::test]
 async fn test_concurrent_memory_insertions() {
-    let db = DatabaseClient::new("sqlite::memory:").await.unwrap();
+    let db = DatabaseClient::new("sqlite::memory:", 384).await.unwrap();
     
     // Spawn multiple concurrent inserts
     let mut handles = vec![];
@@ -457,7 +457,7 @@ async fn test_concurrent_memory_insertions() {
 
 #[tokio::test]
 async fn test_concurrent_searches() {
-    let db = DatabaseClient::new("sqlite::memory:").await.unwrap();
+    let db = DatabaseClient::new("sqlite::memory:", 384).await.unwrap();
     let provider = Box::new(DummyEmbeddingProvider::new(None, Some(384)));
     let vector_store = Arc::new(VectorStore::new(db.clone(), provider));
     

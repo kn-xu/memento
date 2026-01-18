@@ -281,8 +281,7 @@ pub async fn start_mcp_server(
         embedding_dim,
     )?;
     
-    let db_dim = embedding_dim.or(Some(embedding_provider.dim()));
-    let db = DatabaseClient::new_with_dim(&db_url, db_dim).await?;
+    let db = DatabaseClient::new_with_provider(&db_url, embedding_provider.as_ref()).await?;
 
     let vector_store = Arc::new(VectorStore::new(db.clone(), embedding_provider));
 
