@@ -96,7 +96,6 @@ async fn test_insert_and_get_memory() {
         metadata: None,
         last_accessed_at: None,
         created_at: chrono::Utc::now(),
-        expires_at: None,
     };
 
     db.insert_memory(&memory).await.unwrap();
@@ -127,7 +126,6 @@ async fn test_soft_delete_memory() {
         metadata: None,
         last_accessed_at: None,
         created_at: chrono::Utc::now(),
-        expires_at: None,
     };
 
     db.insert_memory(&memory).await.unwrap();
@@ -196,7 +194,6 @@ async fn test_get_memories_by_ids() {
             metadata: None,
             last_accessed_at: None,
             created_at: chrono::Utc::now(),
-            expires_at: None,
         };
         db.insert_memory(&memory).await.unwrap();
     }
@@ -235,7 +232,6 @@ async fn test_update_memory_access() {
         metadata: None,
         last_accessed_at: None,
         created_at: chrono::Utc::now(),
-        expires_at: None,
     };
 
     db.insert_memory(&memory).await.unwrap();
@@ -251,3 +247,147 @@ async fn test_update_memory_access() {
     assert!(retrieved.last_accessed_at.is_some());
 }
 
+// =============================================================================
+// Boost Importance Edge Cases
+// =============================================================================
+
+#[tokio::test]
+async fn test_boost_importance_normal() {
+    let db = DatabaseClient::new("sqlite::memory:", 384).await.unwrap();
+
+    let memory = Memory {
+        id: "mem-boost".to_string(),
+        agent_id: "test-agent".to_string(),
+        user_id: None,
+        session_id: None,
+        memory_type: "episodic".to_string(),
+        text: "Test memory".to_string(),
+        importance: 0.5,
+        is_active: true,
+        supersedes_id: None,
+        source_event_ids: None,
+        metadata: None,
+        last_accessed_at: None,
+        created_at: chrono::Utc::now(),
+    };
+    db.insert_memory(&memory).await.unwrap();
+
+    // Normal boost should increase importance
+    db.boost_importance("mem-boost", 0.1, 1.0).await.unwrap();
+
+    let retrieved = db.get_memory("mem-boost").await.unwrap().unwrap();
+    assert!(retrieved.importance > 0.5, "Importance should have increased");
+    assert!(retrieved.importance < 0.7, "Boost should be modest with diminishing returns");
+}
+
+#[tokio::test]
+async fn test_boost_importance_zero_max_importance() {
+    let db = DatabaseClient::new("sqlite::memory:", 384).await.unwrap();
+
+    let memory = Memory {
+        id: "mem-boost-zero".to_string(),
+        agent_id: "test-agent".to_string(),
+        user_id: None,
+        session_id: None,
+        memory_type: "episodic".to_string(),
+        text: "Test memory".to_string(),
+        importance: 0.5,
+        is_active: true,
+        supersedes_id: None,
+        source_event_ids: None,
+        metadata: None,
+        last_accessed_at: None,
+        created_at: chrono::Utc::now(),
+    };
+    db.insert_memory(&memory).await.unwrap();
+
+    // Zero max_importance should be a no-op (prevents division by zero)
+    db.boost_importance("mem-boost-zero", 0.1, 0.0).await.unwrap();
+
+    let retrieved = db.get_memory("mem-boost-zero").await.unwrap().unwrap();
+    assert_eq!(retrieved.importance, 0.5, "Importance should be unchanged");
+}
+
+#[tokio::test]
+async fn test_boost_importance_negative_max_importance() {
+    let db = DatabaseClient::new("sqlite::memory:", 384).await.unwrap();
+
+    let memory = Memory {
+        id: "mem-boost-neg".to_string(),
+        agent_id: "test-agent".to_string(),
+        user_id: None,
+        session_id: None,
+        memory_type: "episodic".to_string(),
+        text: "Test memory".to_string(),
+        importance: 0.5,
+        is_active: true,
+        supersedes_id: None,
+        source_event_ids: None,
+        metadata: None,
+        last_accessed_at: None,
+        created_at: chrono::Utc::now(),
+    };
+    db.insert_memory(&memory).await.unwrap();
+
+    // Negative max_importance should be a no-op
+    db.boost_importance("mem-boost-neg", 0.1, -1.0).await.unwrap();
+
+    let retrieved = db.get_memory("mem-boost-neg").await.unwrap().unwrap();
+    assert_eq!(retrieved.importance, 0.5, "Importance should be unchanged");
+}
+
+#[tokio::test]
+async fn test_boost_importance_zero_boost_amount() {
+    let db = DatabaseClient::new("sqlite::memory:", 384).await.unwrap();
+
+    let memory = Memory {
+        id: "mem-boost-zero-amt".to_string(),
+        agent_id: "test-agent".to_string(),
+        user_id: None,
+        session_id: None,
+        memory_type: "episodic".to_string(),
+        text: "Test memory".to_string(),
+        importance: 0.5,
+        is_active: true,
+        supersedes_id: None,
+        source_event_ids: None,
+        metadata: None,
+        last_accessed_at: None,
+        created_at: chrono::Utc::now(),
+    };
+    db.insert_memory(&memory).await.unwrap();
+
+    // Zero boost_amount should be a no-op
+    db.boost_importance("mem-boost-zero-amt", 0.0, 1.0).await.unwrap();
+
+    let retrieved = db.get_memory("mem-boost-zero-amt").await.unwrap().unwrap();
+    assert_eq!(retrieved.importance, 0.5, "Importance should be unchanged");
+}
+
+#[tokio::test]
+async fn test_boost_importance_negative_boost_amount() {
+    let db = DatabaseClient::new("sqlite::memory:", 384).await.unwrap();
+
+    let memory = Memory {
+        id: "mem-boost-neg-amt".to_string(),
+        agent_id: "test-agent".to_string(),
+        user_id: None,
+        session_id: None,
+        memory_type: "episodic".to_string(),
+        text: "Test memory".to_string(),
+        importance: 0.5,
+        is_active: true,
+        supersedes_id: None,
+        source_event_ids: None,
+        metadata: None,
+        last_accessed_at: None,
+        created_at: chrono::Utc::now(),
+    };
+    db.insert_memory(&memory).await.unwrap();
+
+    // Negative boost_amount should be a no-op
+    db.boost_importance("mem-boost-neg-amt", -0.1, 1.0).await.unwrap();
+
+    let retrieved = db.get_memory("mem-boost-neg-amt").await.unwrap().unwrap();
+    assert_eq!(retrieved.importance, 0.5, "Importance should be unchanged");
+}

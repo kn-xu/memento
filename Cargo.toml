@@ -2,9 +2,14 @@
 name = "memento"
 version = "0.1.0"
 edition = "2021"
-description = "memento - Universal Agent Memory Engine memory service for AI agents"
+description = "memneto - Long-term memory storage for AI agents via MCP"
 license = "MIT"
 authors = ["Kevin Xu"]
+repository = "https://github.com/pchaganti/memento"
+homepage = "https://github.com/pchaganti/memento"
+readme = "README.md"
+keywords = ["ai", "memory", "mcp", "agent", "llm"]
+categories = ["development-tools", "database"]
 
 [[bin]]
 name = "memento"

@@ -75,7 +75,6 @@ async fn simulate_store(
         metadata: args.metadata.as_ref().map(|m| serde_json::to_string(m).unwrap()),
         last_accessed_at: None,
         created_at: Utc::now(),
-        expires_at: None,
     };
     db.insert_memory(&memory).await.map_err(|e| e.to_string())?;
 
@@ -200,6 +199,7 @@ async fn test_system_store_search_forget_workflow() {
             m.insert("tags".to_string(), serde_json::json!(["preference", "python", "formatting"]));
             m
         }),
+        importance: None,
     };
     let (event_id, memory_id) = simulate_store(&db, &vector_store, store_args).await.unwrap();
     assert!(!event_id.is_empty());
@@ -251,6 +251,7 @@ async fn test_system_multi_user_isolation() {
         session_id: None,
         event_type: Some("preference".to_string()),
         metadata: None,
+        importance: None,
     };
     simulate_store(&db, &vector_store, alice_store).await.unwrap();
 
@@ -262,6 +263,7 @@ async fn test_system_multi_user_isolation() {
         session_id: None,
         event_type: Some("preference".to_string()),
         metadata: None,
+        importance: None,
     };
     simulate_store(&db, &vector_store, bob_store).await.unwrap();
 
@@ -326,6 +328,7 @@ async fn test_system_bulk_store_and_search() {
             session_id: None,
             event_type: Some("preference".to_string()),
             metadata: None,
+        importance: None,
         };
         simulate_store(&db, &vector_store, args).await.unwrap();
     }
@@ -357,6 +360,7 @@ async fn test_system_forget_by_query() {
             session_id: None,
             event_type: Some("preference".to_string()),
             metadata: None,
+        importance: None,
         };
         simulate_store(&db, &vector_store, args).await.unwrap();
     }
@@ -395,6 +399,7 @@ async fn test_system_session_scoped_memories() {
         session_id: Some("session-auth".to_string()),
         event_type: Some("context".to_string()),
         metadata: None,
+        importance: None,
     };
     simulate_store(&db, &vector_store, session1_args).await.unwrap();
 
@@ -405,6 +410,7 @@ async fn test_system_session_scoped_memories() {
         session_id: Some("session-db".to_string()),
         event_type: Some("context".to_string()),
         metadata: None,
+        importance: None,
     };
     simulate_store(&db, &vector_store, session2_args).await.unwrap();
 
@@ -436,6 +442,7 @@ async fn test_system_store_validation_errors() {
         session_id: None,
         event_type: None,
         metadata: None,
+        importance: None,
     };
     let result = simulate_store(&db, &vector_store, args).await;
     assert!(result.is_err());
@@ -449,6 +456,7 @@ async fn test_system_store_validation_errors() {
         session_id: None,
         event_type: None,
         metadata: None,
+        importance: None,
     };
     let result = simulate_store(&db, &vector_store, args).await;
     assert!(result.is_err());
@@ -519,6 +527,7 @@ async fn test_system_store_with_rich_metadata() {
         session_id: None,
         event_type: None,
         metadata: Some(metadata),
+        importance: None,
     };
     
     let (_, memory_id) = simulate_store(&db, &vector_store, args).await.unwrap();
@@ -547,6 +556,7 @@ async fn test_system_memory_provenance_tracking() {
         session_id: None,
         event_type: Some("preference".to_string()),
         metadata: None,
+        importance: None,
     };
     let (event_id, memory_id) = simulate_store(&db, &vector_store, args).await.unwrap();
 
@@ -570,6 +580,7 @@ async fn test_system_memory_provenance_multiple_stores() {
             session_id: None,
             event_type: None,
             metadata: None,
+        importance: None,
         };
         let (event_id, memory_id) = simulate_store(&db, &vector_store, args).await.unwrap();
         pairs.push((event_id, memory_id));
@@ -595,6 +606,7 @@ async fn test_system_provenance_isolation() {
         session_id: None,
         event_type: None,
         metadata: None,
+        importance: None,
     }).await.unwrap();
 
     let (bob_event, bob_mem) = simulate_store(&db, &vector_store, StoreToolArgs {
@@ -604,6 +616,7 @@ async fn test_system_provenance_isolation() {
         session_id: None,
         event_type: None,
         metadata: None,
+        importance: None,
     }).await.unwrap();
 
     // Verify provenance is isolated
@@ -675,6 +688,7 @@ async fn test_system_summarize_returns_unsummarized_events() {
             session_id: None,
             event_type: Some("user_msg".to_string()),
             metadata: None,
+        importance: None,
         };
         simulate_store(&db, &vector_store, args).await.unwrap();
     }
@@ -721,6 +735,7 @@ async fn test_system_summarize_respects_limit() {
             session_id: None,
             event_type: None,
             metadata: None,
+        importance: None,
         };
         simulate_store(&db, &vector_store, args).await.unwrap();
     }
@@ -751,6 +766,7 @@ async fn test_system_mark_summarized_removes_from_queue() {
             session_id: None,
             event_type: None,
             metadata: None,
+        importance: None,
         };
         let (event_id, _) = simulate_store(&db, &vector_store, args).await.unwrap();
         event_ids.push(event_id);
@@ -799,6 +815,7 @@ async fn test_system_full_summarization_workflow() {
             session_id: Some("session-1".to_string()),
             event_type: Some("preference".to_string()),
             metadata: None,
+        importance: None,
         };
         let (event_id, _) = simulate_store(&db, &vector_store, args).await.unwrap();
         all_event_ids.push(event_id);
@@ -826,6 +843,7 @@ async fn test_system_full_summarization_workflow() {
             m.insert("summarized_from".to_string(), serde_json::json!(all_event_ids));
             m
         }),
+        importance: None,
     };
     simulate_store(&db, &vector_store, summary_args).await.unwrap();
 
@@ -872,6 +890,7 @@ async fn test_system_summarize_agent_isolation() {
             session_id: None,
             event_type: None,
             metadata: None,
+        importance: None,
         };
         simulate_store(&db, &vector_store, args).await.unwrap();
     }
@@ -885,6 +904,7 @@ async fn test_system_summarize_agent_isolation() {
             session_id: None,
             event_type: None,
             metadata: None,
+        importance: None,
         };
         simulate_store(&db, &vector_store, args).await.unwrap();
     }

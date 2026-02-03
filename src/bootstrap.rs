@@ -32,15 +32,12 @@ pub async fn init_database_and_provider(
             .or_else(|| {
                 match db_type_norm.as_str() {
                     "postgresql" | "postgres" | "pg" => {
-                        let url = std::env::var("DATABASE_URL").ok();
-                        if url.is_none() {
-                            eprintln!("⚠️  PostgreSQL requires a database URL. Set DATABASE_URL or MEMENTO_DATABASE_URL environment variable, or use --database-url");
-                        }
-                        url
+                        eprintln!("⚠️  PostgreSQL requires a database URL. Set MEMENTO_DATABASE_URL environment variable, or use --database-url");
+                        None
                     }
                     _ => {
-                        eprintln!("ℹ️  No database URL provided, defaulting to ./memento.db");
-                        Some("./memento.db".to_string())
+                        eprintln!("ℹ️  No database URL provided, defaulting to ./db/memento.db");
+                        Some("./db/memento.db".to_string())
                     }
                 }
             });
@@ -57,12 +54,12 @@ pub async fn init_database_and_provider(
                 }
             }
             "sqlite" | "sqlite3" => {
-                let path = db_url.unwrap_or_else(|| "./memento.db".to_string());
+                let path = db_url.unwrap_or_else(|| "./db/memento.db".to_string());
                 DatabaseClient::normalize_sqlite_url(&path)
             }
             other => {
                 eprintln!("⚠️  Unknown database_type '{}', defaulting to sqlite", other);
-                let path = db_url.unwrap_or_else(|| "./memento.db".to_string());
+                let path = db_url.unwrap_or_else(|| "./db/memento.db".to_string());
                 DatabaseClient::normalize_sqlite_url(&path)
             }
         };

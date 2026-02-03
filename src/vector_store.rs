@@ -162,6 +162,33 @@ impl VectorStore {
         }
     }
 
+    /// Search by pre-computed embedding vector.
+    /// Used for novelty scoring to avoid recomputing embeddings.
+    pub async fn search_by_embedding(
+        &self,
+        embedding: &[f32],
+        k: usize,
+        agent_id: &str,
+        user_id: Option<&str>,
+    ) -> Result<Vec<VectorSearchResult>> {
+        let filters = Metadata::new();
+        match &self.db {
+            DatabaseClient::Postgres(pool) => {
+                self.search_pgvector(pool, embedding, k, filters, Some(agent_id), user_id)
+                    .await
+            }
+            DatabaseClient::Sqlite(_) => {
+                self.search_sqlite(embedding, k, filters, Some(agent_id), user_id).await
+            }
+        }
+    }
+
+    /// Compute embedding for text without storing it.
+    /// Used to get embedding before deciding on importance.
+    pub async fn compute_embedding(&self, text: &str) -> Result<Vec<f32>> {
+        self.embedding_provider.embed(text).await
+    }
+
     async fn search_pgvector(
         &self,
         pool: &PgPool,
@@ -177,7 +204,7 @@ impl VectorStore {
             "SELECT id, 1 - (embedding <=> "
         );
         query_builder.push_bind(query_vector.clone());
-        query_builder.push("::vector) AS score, metadata FROM memories WHERE is_active = TRUE AND embedding IS NOT NULL AND (expires_at IS NULL OR expires_at > NOW())");
+        query_builder.push("::vector) AS score, metadata FROM memories WHERE is_active = TRUE AND embedding IS NOT NULL");
 
         Self::apply_filters(&mut query_builder, agent_id, user_id, &filters);
 
@@ -216,7 +243,7 @@ impl VectorStore {
 
         let fetch_limit = (k * 10).max(100).min(5000);
         let mut query_builder: QueryBuilder<'_, sqlx::Sqlite> = QueryBuilder::new(
-            "SELECT id, embedding, metadata FROM memories WHERE is_active = 1 AND embedding IS NOT NULL AND (expires_at IS NULL OR expires_at > datetime('now'))"
+            "SELECT id, embedding, metadata FROM memories WHERE is_active = 1 AND embedding IS NOT NULL"
         );
 
         Self::apply_filters(&mut query_builder, agent_id, user_id, &filters);
@@ -290,6 +317,16 @@ impl VectorStore {
     }
 }
 
+/// Computes cosine similarity between two vectors.
+/// 
+/// # Returns
+/// - Similarity score in range [-1.0, 1.0] for valid inputs
+/// - 0.0 for edge cases: different lengths, zero vectors, or NaN values
+/// 
+/// # Edge Cases Handled
+/// - Different vector lengths → 0.0
+/// - Zero-magnitude vectors → 0.0
+/// - NaN values in either vector → 0.0
 fn cosine_similarity(a: &[f32], b: &[f32]) -> f64 {
     if a.len() != b.len() {
         return 0.0;
@@ -300,15 +337,30 @@ fn cosine_similarity(a: &[f32], b: &[f32]) -> f64 {
     let mut norm_b = 0.0;
 
     for i in 0..a.len() {
-        dot_product += (a[i] as f64) * (b[i] as f64);
-        norm_a += (a[i] as f64) * (a[i] as f64);
-        norm_b += (b[i] as f64) * (b[i] as f64);
+        let ai = a[i] as f64;
+        let bi = b[i] as f64;
+        
+        // Check for NaN - if any value is NaN, return 0.0
+        if !ai.is_finite() || !bi.is_finite() {
+            return 0.0;
+        }
+        
+        dot_product += ai * bi;
+        norm_a += ai * ai;
+        norm_b += bi * bi;
     }
 
     if norm_a == 0.0 || norm_b == 0.0 {
         return 0.0;
     }
 
-    dot_product / (norm_a.sqrt() * norm_b.sqrt())
+    let result = dot_product / (norm_a.sqrt() * norm_b.sqrt());
+    
+    // Final check: if result is NaN (shouldn't happen, but defensive)
+    if result.is_finite() {
+        result
+    } else {
+        0.0
+    }
 }
 

@@ -90,7 +90,6 @@ async fn test_perf_store_latency() {
             metadata: None,
             last_accessed_at: None,
             created_at: Utc::now(),
-            expires_at: None,
         };
         db.insert_memory(&memory).await.unwrap();
 
@@ -147,7 +146,6 @@ async fn test_perf_search_latency() {
             metadata: None,
             last_accessed_at: None,
             created_at: Utc::now(),
-            expires_at: None,
         };
         db.insert_memory(&memory).await.unwrap();
 
@@ -228,7 +226,6 @@ async fn test_perf_search_scaling() {
                 metadata: None,
                 last_accessed_at: None,
                 created_at: Utc::now(),
-                expires_at: None,
             };
             db.insert_memory(&memory).await.unwrap();
 
@@ -308,7 +305,6 @@ async fn test_perf_concurrent_stores() {
                     metadata: None,
                     last_accessed_at: None,
                     created_at: Utc::now(),
-                    expires_at: None,
                 };
                 db_clone.insert_memory(&memory).await.unwrap();
 
@@ -362,7 +358,6 @@ async fn test_perf_concurrent_searches() {
             metadata: None,
             last_accessed_at: None,
             created_at: Utc::now(),
-            expires_at: None,
         };
         db.insert_memory(&memory).await.unwrap();
 
@@ -437,7 +432,6 @@ async fn test_perf_mixed_workload() {
             metadata: None,
             last_accessed_at: None,
             created_at: Utc::now(),
-            expires_at: None,
         };
         db.insert_memory(&memory).await.unwrap();
 
@@ -484,7 +478,6 @@ async fn test_perf_mixed_workload() {
                 metadata: None,
                 last_accessed_at: None,
                 created_at: Utc::now(),
-                expires_at: None,
             };
             db.insert_memory(&memory).await.unwrap();
 
@@ -556,7 +549,6 @@ async fn test_perf_large_content_handling() {
             metadata: None,
             last_accessed_at: None,
             created_at: Utc::now(),
-            expires_at: None,
         };
         db.insert_memory(&memory).await.unwrap();
 
@@ -603,7 +595,6 @@ async fn test_perf_latency_distribution() {
             metadata: None,
             last_accessed_at: None,
             created_at: Utc::now(),
-            expires_at: None,
         };
         db.insert_memory(&memory).await.unwrap();
 

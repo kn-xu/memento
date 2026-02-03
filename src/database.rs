@@ -43,7 +43,6 @@ pub struct Memory {
     pub metadata: Option<String>,
     pub last_accessed_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
-    pub expires_at: Option<DateTime<Utc>>,
 }
 
 // =============================================================================
@@ -179,7 +178,6 @@ impl DatabaseClient {
                 metadata TEXT,
                 last_accessed_at TIMESTAMP,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                expires_at TIMESTAMP,
                 FOREIGN KEY (supersedes_id) REFERENCES memories(id)
             )",
         )
@@ -290,7 +288,6 @@ impl DatabaseClient {
                 metadata TEXT,
                 last_accessed_at TIMESTAMP,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                expires_at TIMESTAMP,
                 FOREIGN KEY (supersedes_id) REFERENCES memories(id)
             )",
             embedding_dim
@@ -509,8 +506,8 @@ impl DatabaseClient {
                     "INSERT INTO memories (
                         id, agent_id, user_id, session_id, memory_type, text, embedding,
                         importance, is_active, supersedes_id, source_event_ids, metadata,
-                        last_accessed_at, expires_at
-                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                        last_accessed_at
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7, ?8, ?9, ?10, ?11, ?12)",
                 )
                 .bind(&memory.id)
                 .bind(&memory.agent_id)
@@ -524,7 +521,6 @@ impl DatabaseClient {
                 .bind(&memory.source_event_ids)
                 .bind(&memory.metadata)
                 .bind(&memory.last_accessed_at)
-                .bind(&memory.expires_at)
                 .execute(pool)
                 .await?;
             }
@@ -533,8 +529,8 @@ impl DatabaseClient {
                     "INSERT INTO memories (
                         id, agent_id, user_id, session_id, memory_type, text, embedding,
                         importance, is_active, supersedes_id, source_event_ids, metadata,
-                        last_accessed_at, expires_at
-                    ) VALUES ($1, $2, $3, $4, $5, $6, NULL, $7, $8, $9, $10, $11, $12, $13)",
+                        last_accessed_at
+                    ) VALUES ($1, $2, $3, $4, $5, $6, NULL, $7, $8, $9, $10, $11, $12)",
                 )
                 .bind(&memory.id)
                 .bind(&memory.agent_id)
@@ -548,7 +544,6 @@ impl DatabaseClient {
                 .bind(&memory.source_event_ids)
                 .bind(&memory.metadata)
                 .bind(&memory.last_accessed_at)
-                .bind(&memory.expires_at)
                 .execute(pool)
                 .await?;
             }
@@ -562,7 +557,7 @@ impl DatabaseClient {
                 let row = sqlx::query(
                     "SELECT id, agent_id, user_id, session_id, memory_type, text,
                             importance, is_active, supersedes_id, source_event_ids,
-                            metadata, last_accessed_at, created_at, expires_at
+                            metadata, last_accessed_at, created_at
                      FROM memories WHERE id = ?1"
                 )
                     .bind(id)
@@ -579,7 +574,7 @@ impl DatabaseClient {
                 let row = sqlx::query(
                     "SELECT id, agent_id, user_id, session_id, memory_type, text,
                             importance, is_active, supersedes_id, source_event_ids,
-                            metadata, last_accessed_at, created_at, expires_at
+                            metadata, last_accessed_at, created_at
                      FROM memories WHERE id = $1"
                 )
                     .bind(id)
@@ -611,7 +606,7 @@ impl DatabaseClient {
                 let sql = format!(
                     "SELECT id, agent_id, user_id, session_id, memory_type, text,
                             importance, is_active, supersedes_id, source_event_ids,
-                            metadata, last_accessed_at, created_at, expires_at
+                            metadata, last_accessed_at, created_at
                      FROM memories WHERE id IN ({})",
                     placeholders.join(", ")
                 );
@@ -632,7 +627,7 @@ impl DatabaseClient {
                 let rows = sqlx::query(
                     "SELECT id, agent_id, user_id, session_id, memory_type, text,
                             importance, is_active, supersedes_id, source_event_ids,
-                            metadata, last_accessed_at, created_at, expires_at
+                            metadata, last_accessed_at, created_at
                      FROM memories WHERE id = ANY($1::text[])"
                 )
                     .bind(ids)
@@ -667,6 +662,55 @@ impl DatabaseClient {
         Ok(())
     }
 
+    /// Boost importance when a memory is accessed, using diminishing returns.
+    /// Also updates last_accessed_at timestamp.
+    ///
+    /// # Arguments
+    /// * `id` - Memory ID to boost
+    /// * `boost_amount` - Base boost value (will be scaled by diminishing returns)
+    /// * `max_importance` - Maximum importance cap (must be > 0)
+    ///
+    /// # Edge Cases
+    /// - If `max_importance <= 0`, returns early without updating (prevents division by zero)
+    /// - If `boost_amount <= 0`, returns early (no-op)
+    pub async fn boost_importance(&self, id: &str, boost_amount: f64, max_importance: f64) -> Result<()> {
+        // Guard against division by zero in SQL and no-op cases
+        if max_importance <= 0.0 || boost_amount <= 0.0 {
+            return Ok(());
+        }
+
+        match self {
+            Self::Sqlite(pool) => {
+                // Diminishing returns formula: boost decreases as importance approaches max
+                sqlx::query(
+                    "UPDATE memories SET 
+                        importance = MIN(?2, importance + ?3 * ((?2 - importance) / ?2)),
+                        last_accessed_at = CURRENT_TIMESTAMP
+                    WHERE id = ?1"
+                )
+                    .bind(id)
+                    .bind(max_importance)
+                    .bind(boost_amount)
+                    .execute(pool)
+                    .await?;
+            }
+            Self::Postgres(pool) => {
+                sqlx::query(
+                    "UPDATE memories SET 
+                        importance = LEAST($2, importance + $3 * (($2 - importance) / $2)),
+                        last_accessed_at = CURRENT_TIMESTAMP
+                    WHERE id = $1"
+                )
+                    .bind(id)
+                    .bind(max_importance)
+                    .bind(boost_amount)
+                    .execute(pool)
+                    .await?;
+            }
+        }
+        Ok(())
+    }
+
     pub async fn soft_delete_memory(&self, id: &str) -> Result<()> {
         match self {
             Self::Sqlite(pool) => {
@@ -683,6 +727,154 @@ impl DatabaseClient {
             }
         }
         Ok(())
+    }
+
+    /// Prune memories based on various criteria.
+    /// Returns the number of memories that were (or would be, if dry_run) deleted.
+    /// 
+    /// This performs a HARD delete (permanent removal from database).
+    pub async fn prune_memories(
+        &self,
+        older_than: Option<DateTime<Utc>>,
+        importance_below: Option<f64>,
+        never_accessed: bool,
+        agent_id: Option<&str>,
+        dry_run: bool,
+    ) -> Result<u64> {
+        // Build WHERE clauses
+        let mut conditions = Vec::new();
+        
+        if older_than.is_some() {
+            conditions.push("created_at < ?");
+        }
+        if importance_below.is_some() {
+            conditions.push("importance < ?");
+        }
+        if never_accessed {
+            conditions.push("last_accessed_at IS NULL");
+        }
+        if agent_id.is_some() {
+            conditions.push("agent_id = ?");
+        }
+        
+        if conditions.is_empty() {
+            return Err(anyhow::anyhow!("At least one prune criterion is required"));
+        }
+        
+        match self {
+            Self::Sqlite(pool) => {
+                // SQLite uses ?N placeholders
+                let mut param_idx = 1;
+                let mut where_parts = Vec::new();
+                
+                if older_than.is_some() {
+                    where_parts.push(format!("created_at < ?{}", param_idx));
+                    param_idx += 1;
+                }
+                if importance_below.is_some() {
+                    where_parts.push(format!("importance < ?{}", param_idx));
+                    param_idx += 1;
+                }
+                if never_accessed {
+                    where_parts.push("last_accessed_at IS NULL".to_string());
+                }
+                if agent_id.is_some() {
+                    where_parts.push(format!("agent_id = ?{}", param_idx));
+                }
+                
+                let where_clause = where_parts.join(" AND ");
+                
+                if dry_run {
+                    let count_sql = format!("SELECT COUNT(*) as count FROM memories WHERE {}", where_clause);
+                    let mut query = sqlx::query_scalar::<_, i64>(&count_sql);
+                    
+                    if let Some(date) = older_than {
+                        query = query.bind(date);
+                    }
+                    if let Some(imp) = importance_below {
+                        query = query.bind(imp);
+                    }
+                    if let Some(agent) = agent_id {
+                        query = query.bind(agent);
+                    }
+                    
+                    let count = query.fetch_one(pool).await?;
+                    Ok(count as u64)
+                } else {
+                    let delete_sql = format!("DELETE FROM memories WHERE {}", where_clause);
+                    let mut query = sqlx::query(&delete_sql);
+                    
+                    if let Some(date) = older_than {
+                        query = query.bind(date);
+                    }
+                    if let Some(imp) = importance_below {
+                        query = query.bind(imp);
+                    }
+                    if let Some(agent) = agent_id {
+                        query = query.bind(agent);
+                    }
+                    
+                    let result = query.execute(pool).await?;
+                    Ok(result.rows_affected())
+                }
+            }
+            Self::Postgres(pool) => {
+                // PostgreSQL uses $N placeholders
+                let mut param_idx = 1;
+                let mut where_parts = Vec::new();
+                
+                if older_than.is_some() {
+                    where_parts.push(format!("created_at < ${}", param_idx));
+                    param_idx += 1;
+                }
+                if importance_below.is_some() {
+                    where_parts.push(format!("importance < ${}", param_idx));
+                    param_idx += 1;
+                }
+                if never_accessed {
+                    where_parts.push("last_accessed_at IS NULL".to_string());
+                }
+                if agent_id.is_some() {
+                    where_parts.push(format!("agent_id = ${}", param_idx));
+                }
+                
+                let where_clause = where_parts.join(" AND ");
+                
+                if dry_run {
+                    let count_sql = format!("SELECT COUNT(*) FROM memories WHERE {}", where_clause);
+                    let mut query = sqlx::query_scalar::<_, i64>(&count_sql);
+                    
+                    if let Some(date) = older_than {
+                        query = query.bind(date);
+                    }
+                    if let Some(imp) = importance_below {
+                        query = query.bind(imp);
+                    }
+                    if let Some(agent) = agent_id {
+                        query = query.bind(agent);
+                    }
+                    
+                    let count = query.fetch_one(pool).await?;
+                    Ok(count as u64)
+                } else {
+                    let delete_sql = format!("DELETE FROM memories WHERE {}", where_clause);
+                    let mut query = sqlx::query(&delete_sql);
+                    
+                    if let Some(date) = older_than {
+                        query = query.bind(date);
+                    }
+                    if let Some(imp) = importance_below {
+                        query = query.bind(imp);
+                    }
+                    if let Some(agent) = agent_id {
+                        query = query.bind(agent);
+                    }
+                    
+                    let result = query.execute(pool).await?;
+                    Ok(result.rows_affected())
+                }
+            }
+        }
     }
 
     /// This populates the memory_sources join table for tracking event provenance.
@@ -775,7 +967,6 @@ impl DatabaseClient {
             row.try_get("metadata").ok(),
             row.try_get("last_accessed_at").ok(),
             row.try_get("created_at")?,
-            row.try_get("expires_at").ok(),
         )
     }
 
@@ -794,7 +985,6 @@ impl DatabaseClient {
             row.try_get("metadata").ok(),
             row.try_get("last_accessed_at").ok(),
             row.try_get("created_at")?,
-            row.try_get("expires_at").ok(),
         )
     }
 
@@ -813,7 +1003,6 @@ impl DatabaseClient {
         metadata: Option<String>,
         last_accessed_at: Option<DateTime<Utc>>,
         created_at: DateTime<Utc>,
-        expires_at: Option<DateTime<Utc>>,
     ) -> Result<Memory> {
         Ok(Memory {
             id,
@@ -829,7 +1018,6 @@ impl DatabaseClient {
             metadata,
             last_accessed_at,
             created_at,
-            expires_at,
         })
     }
 }

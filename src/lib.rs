@@ -4,6 +4,7 @@ pub mod database;
 pub mod embeddings;
 pub mod mcp;
 pub mod prompts;
+pub mod scoring;
 pub mod types;
 pub mod vector_store;
 

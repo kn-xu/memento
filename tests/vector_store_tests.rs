@@ -5,7 +5,13 @@ use memento::embeddings::DummyEmbeddingProvider;
 use memento::types::Metadata;
 use memento::vector_store::{VectorSearchResult, VectorStore};
 
-/// Helper function to compute cosine similarity (re-implemented for tests)
+/// Helper function to compute cosine similarity (re-implemented for tests).
+/// Mirrors the production implementation in vector_store.rs.
+/// 
+/// # Edge Cases Handled
+/// - Different vector lengths → 0.0
+/// - Zero-magnitude vectors → 0.0
+/// - NaN/Infinity values in either vector → 0.0
 fn cosine_similarity(a: &[f32], b: &[f32]) -> f64 {
     if a.len() != b.len() {
         return 0.0;
@@ -16,16 +22,31 @@ fn cosine_similarity(a: &[f32], b: &[f32]) -> f64 {
     let mut norm_b = 0.0;
 
     for i in 0..a.len() {
-        dot_product += (a[i] as f64) * (b[i] as f64);
-        norm_a += (a[i] as f64) * (a[i] as f64);
-        norm_b += (b[i] as f64) * (b[i] as f64);
+        let ai = a[i] as f64;
+        let bi = b[i] as f64;
+        
+        // Check for NaN/Infinity - if any value is non-finite, return 0.0
+        if !ai.is_finite() || !bi.is_finite() {
+            return 0.0;
+        }
+        
+        dot_product += ai * bi;
+        norm_a += ai * ai;
+        norm_b += bi * bi;
     }
 
     if norm_a == 0.0 || norm_b == 0.0 {
         return 0.0;
     }
 
-    dot_product / (norm_a.sqrt() * norm_b.sqrt())
+    let result = dot_product / (norm_a.sqrt() * norm_b.sqrt());
+    
+    // Final defensive check
+    if result.is_finite() {
+        result
+    } else {
+        0.0
+    }
 }
 
 #[test]
@@ -78,6 +99,44 @@ fn test_cosine_similarity_normalized_vectors() {
 }
 
 #[test]
+fn test_cosine_similarity_nan_in_first_vector() {
+    let a = vec![f32::NAN, 1.0, 0.0];
+    let b = vec![1.0, 0.0, 0.0];
+    let sim = cosine_similarity(&a, &b);
+    assert_eq!(sim, 0.0, "NaN in first vector should return 0.0");
+}
+
+#[test]
+fn test_cosine_similarity_nan_in_second_vector() {
+    let a = vec![1.0, 0.0, 0.0];
+    let b = vec![f32::NAN, 1.0, 0.0];
+    let sim = cosine_similarity(&a, &b);
+    assert_eq!(sim, 0.0, "NaN in second vector should return 0.0");
+}
+
+#[test]
+fn test_cosine_similarity_infinity_handling() {
+    let a = vec![f32::INFINITY, 1.0, 0.0];
+    let b = vec![1.0, 0.0, 0.0];
+    let sim = cosine_similarity(&a, &b);
+    assert_eq!(sim, 0.0, "Infinity in vector should return 0.0");
+    
+    let a = vec![f32::NEG_INFINITY, 1.0, 0.0];
+    let b = vec![1.0, 0.0, 0.0];
+    let sim = cosine_similarity(&a, &b);
+    assert_eq!(sim, 0.0, "Negative infinity in vector should return 0.0");
+}
+
+#[test]
+fn test_cosine_similarity_mixed_nan_and_valid() {
+    // NaN at the end - should still detect it
+    let a = vec![1.0, 0.0, f32::NAN];
+    let b = vec![1.0, 0.0, 0.0];
+    let sim = cosine_similarity(&a, &b);
+    assert_eq!(sim, 0.0, "NaN anywhere in vector should return 0.0");
+}
+
+#[test]
 fn test_vector_search_result_creation() {
     let result = VectorSearchResult {
         memory_id: "mem-123".to_string(),
@@ -109,7 +168,6 @@ async fn test_vector_store_add_and_search() {
         metadata: None,
         last_accessed_at: None,
         created_at: chrono::Utc::now(),
-        expires_at: None,
     };
     db.insert_memory(&memory).await.unwrap();
 
@@ -165,7 +223,6 @@ async fn test_vector_store_delete() {
         metadata: None,
         last_accessed_at: None,
         created_at: chrono::Utc::now(),
-        expires_at: None,
     };
     db.insert_memory(&memory).await.unwrap();
     vector_store
@@ -214,7 +271,6 @@ async fn test_vector_store_search_with_filters() {
             metadata: None,
             last_accessed_at: None,
             created_at: chrono::Utc::now(),
-            expires_at: None,
         };
         db.insert_memory(&memory).await.unwrap();
 

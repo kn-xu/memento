@@ -3,15 +3,15 @@
 //! Handles JSON-RPC requests over stdio for tool invocations like
 //! memento.store, memento.search, memento.forget, etc.
 
-use crate::config::Config;
+use crate::config::{Config, MAX_METADATA_SIZE, MAX_SEARCH_RESULTS, MAX_TEXT_LENGTH};
 use crate::database::{DatabaseClient, Memory, MemoryEvent};
 use crate::embeddings::get_embedding_provider;
 use crate::prompts::format_summarize_instructions;
 use crate::types::*;
-use crate::vector_store::VectorStore;
+use crate::vector_store::{VectorSearchResult, VectorStore};
 use anyhow::Result;
 use chrono::Utc;
-use dialoguer::{Input, Select};
+use dialoguer::{Confirm, Input, Select};
 use directories::ProjectDirs;
 use serde_json::{json, Value};
 use sqlx::Row;
@@ -82,48 +82,184 @@ fn load_config_from_file() -> Option<serde_json::Value> {
 }
 
 pub fn run_init() -> Result<()> {
+    eprintln!("\n🧠 Welcome to Memento - Universal Agent Memory Engine\n");
     let (db_type, db_url) = prompt_database_config()?;
     let (provider, model, embedding_dim) = prompt_embedding_config()?;
     save_config(&db_type, &db_url, &provider, &model, embedding_dim)?;
-    eprintln!("✅ Configuration saved! You can now run: memento mcp");
+    eprintln!("\n✅ Configuration saved!");
     Ok(())
 }
 
+/// Check if configuration exists
+pub fn config_exists() -> bool {
+    config_path().map(|p| p.exists()).unwrap_or(false)
+}
+
+/// Validate PostgreSQL URL format
+fn is_valid_postgres_url(url: &str) -> bool {
+    (url.starts_with("postgresql://") || url.starts_with("postgres://"))
+        && url.contains('@')
+        && url.len() > 15
+}
+
+/// Validate local database path - returns None if valid, Some(error) if invalid
+fn validate_local_path(path: &str) -> Option<String> {
+    // Check for empty path
+    if path.is_empty() {
+        return Some("Path cannot be empty.".to_string());
+    }
+    
+    // Check for invalid characters (basic check)
+    let invalid_chars = ['<', '>', ':', '"', '|', '?', '*'];
+    for c in invalid_chars {
+        if path.contains(c) {
+            return Some(format!("Path contains invalid character: '{}'", c));
+        }
+    }
+    
+    // Check it's not just whitespace
+    if path.chars().all(|c| c.is_whitespace()) {
+        return Some("Path cannot be only whitespace.".to_string());
+    }
+    
+    // Check for obviously invalid patterns
+    if path.contains("//") && !path.starts_with("//") {
+        return Some("Path contains invalid double slashes.".to_string());
+    }
+    
+    // Expand ~ to home directory and check if parent could exist
+    let expanded = if path.starts_with("~/") {
+        if let Some(base_dirs) = directories::BaseDirs::new() {
+            base_dirs.home_dir().join(&path[2..])
+        } else {
+            return Some("Could not expand ~ to home directory.".to_string());
+        }
+    } else {
+        std::path::PathBuf::from(path)
+    };
+    
+    // Check if path is absolute and parent exists, or if it's relative (which is fine)
+    if expanded.is_absolute() {
+        // For absolute paths, check if parent directory exists or can be created
+        if let Some(parent) = expanded.parent() {
+            if !parent.exists() && parent.parent().map(|p| !p.exists()).unwrap_or(false) {
+                return Some(format!("Parent directory does not exist: {}", parent.display()));
+            }
+        }
+    }
+    
+    None // Valid
+}
+
 fn prompt_database_config() -> Result<(String, String)> {
-    let db_types = vec!["sqlite", "postgresql"];
-    let db_type_idx = Select::new()
-        .with_prompt("Select database type")
-        .items(&db_types)
+    let storage_options = vec![
+        "📁 Local Storage (SQLite - recommended for personal use)",
+        "☁️  Cloud Database (PostgreSQL - for teams/production)",
+    ];
+    
+    let storage_idx = Select::new()
+        .with_prompt("Where would you like to store your memories?")
+        .items(&storage_options)
         .default(0)
         .interact()?;
     
-    let db_type = db_types[db_type_idx].to_string();
+    let db_type = if storage_idx == 0 { "sqlite" } else { "postgresql" }.to_string();
     
     let db_url = if db_type == "postgresql" {
-        Input::<String>::new()
-            .with_prompt("Enter PostgreSQL connection URL")
-            .with_initial_text("postgresql://user:password@localhost:5432/memento")
-            .interact_text()?
+        // Cloud database - require valid URL
+        eprintln!("\n📝 Enter your PostgreSQL connection URL");
+        eprintln!("   Format: postgresql://user:password@host:port/database\n");
+        
+        loop {
+            let url = Input::<String>::new()
+                .with_prompt("PostgreSQL URL")
+                .interact_text()?;
+            
+            if is_valid_postgres_url(&url) {
+                break url;
+            } else {
+                eprintln!("❌ Invalid URL format. Please enter a valid PostgreSQL URL.");
+                eprintln!("   Example: postgresql://myuser:mypassword@localhost:5432/memento\n");
+            }
+        }
     } else {
-        Input::<String>::new()
-            .with_prompt("Enter SQLite database path")
-            .with_initial_text("./memento.db")
-            .interact_text()?
+        // Local storage - ask for folder or use default
+        let default_path = "./db/memento.db";
+        eprintln!("\n📁 Choose where to store your local database");
+        eprintln!("   Default: {}", default_path);
+        eprintln!("   Press Enter to use the default, or enter a folder path.\n");
+        
+        loop {
+            let folder = Input::<String>::new()
+                .with_prompt("Database folder")
+                .allow_empty(true)
+                .interact_text()?;
+            
+            let folder = folder.trim();
+            
+            // Use default if empty
+            if folder.is_empty() {
+                break default_path.to_string();
+            }
+            
+            // Validate the path
+            if let Some(validation_error) = validate_local_path(folder) {
+                eprintln!("❌ {}", validation_error);
+                eprintln!("   Please enter a valid folder path (e.g., ./data, /home/user/memento, ~/memento)\n");
+                continue;
+            }
+            
+            // Normalize and construct full path
+            let folder = folder.trim_end_matches('/');
+            break format!("{}/memento.db", folder);
+        }
     };
     
     Ok((db_type, db_url))
 }
 
 fn prompt_embedding_config() -> Result<(String, String, Option<usize>)> {
-    let providers = vec!["local", "openai"];
+    let providers = vec![
+        "🖥️  Local (free, runs on device, no API key needed)",
+        "🌐 OpenAI (requires API key, better quality)",
+    ];
     let provider_idx = Select::new()
         .with_prompt("Select embedding provider")
         .items(&providers)
         .default(0)
         .interact()?;
     
-    let provider = providers[provider_idx].to_string();
+    let provider = if provider_idx == 0 { "local" } else { "openai" }.to_string();
     
+    // If OpenAI selected, validate API key is set
+    if provider == "openai" {
+        let has_api_key = std::env::var("MEMENTO_OPENAI_API_KEY").is_ok();
+        
+        if !has_api_key {
+            eprintln!("\n⚠️  MEMENTO_OPENAI_API_KEY not found in environment.");
+            eprintln!("\n   To use OpenAI embeddings, set this environment variable:");
+            eprintln!("   export MEMENTO_OPENAI_API_KEY=sk-...");
+            eprintln!("\n   Add this to your shell profile (~/.bashrc, ~/.zshrc) or");
+            eprintln!("   in your MCP client's environment configuration.\n");
+            
+            let proceed = Confirm::new()
+                .with_prompt("Continue with OpenAI anyway? (You'll need to set the API key before use)")
+                .default(false)
+                .interact()?;
+            
+            if !proceed {
+                eprintln!("\n📝 Switching to local embeddings instead.\n");
+                return prompt_embedding_config_details("local");
+            }
+        } else {
+            eprintln!("\n✅ OpenAI API key found in environment.\n");
+        }
+    }
+    
+    prompt_embedding_config_details(&provider)
+}
+
+fn prompt_embedding_config_details(provider: &str) -> Result<(String, String, Option<usize>)> {
     let default_model = if provider == "openai" {
         "text-embedding-3-small"
     } else {
@@ -148,11 +284,7 @@ fn prompt_embedding_config() -> Result<(String, String, Option<usize>)> {
         dim_str.parse().ok()
     };
     
-    if provider == "openai" {
-        eprintln!("⚠️  Note: Set MEMENTO_OPENAI_API_KEY or OPENAI_API_KEY environment variable for OpenAI API access.");
-    }
-    
-    Ok((provider, model, embedding_dim))
+    Ok((provider.to_string(), model, embedding_dim))
 }
 
 pub async fn start_mcp_server(
@@ -160,6 +292,29 @@ pub async fn start_mcp_server(
     database_url: Option<String>,
     embedding_dim_override: Option<usize>,
 ) -> Result<()> {
+    // Check if this is first use (no config, no CLI args, no env vars)
+    let has_cli_args = database_type.is_some() || database_url.is_some();
+    let has_env_vars = std::env::var("MEMENTO_DATABASE_URL").is_ok();
+    
+    if !config_exists() && !has_cli_args && !has_env_vars {
+        // First use - run interactive setup
+        if atty::is(atty::Stream::Stdin) {
+            run_init()?;
+        } else {
+            // Non-interactive mode (e.g., MCP client) - auto-create default config
+            eprintln!("📝 First run detected. Creating default configuration...");
+            save_config(
+                "sqlite",
+                "./db/memento.db",
+                "local",
+                "Xenova/all-MiniLM-L6-v2",
+                Some(384),
+            )?;
+            eprintln!("✅ Default config created: SQLite + local embeddings");
+            eprintln!("   Use memento.configure tool or 'memento init' to customize.\n");
+        }
+    }
+    
     let file_cfg = load_config_from_file();
     let file_db_type = file_cfg.as_ref()
         .and_then(|v| v.get("database_type"))
@@ -192,10 +347,8 @@ pub async fn start_mcp_server(
             .or_else(|| std::env::var("MEMENTO_DATABASE_URL").ok())
             .or_else(|| {
                 match db_type.as_str() {
-                    "postgresql" | "postgres" => {
-                        std::env::var("DATABASE_URL").ok()
-                    }
-                    _ => Some("./memento.db".to_string())
+                    "postgresql" | "postgres" => None,
+                    _ => Some("./db/memento.db".to_string())
                 }
             });
         
@@ -212,7 +365,7 @@ pub async fn start_mcp_server(
                 }
             }
             _ => {
-                let path = db_url.unwrap_or_else(|| "./memento.db".to_string());
+                let path = db_url.unwrap_or_else(|| "./db/memento.db".to_string());
                 let path = path.strip_prefix("sqlite://").unwrap_or(&path);
                 format!("sqlite://{}", path)
             }
@@ -230,10 +383,8 @@ pub async fn start_mcp_server(
             .or_else(|| file_db_url)
             .or_else(|| {
                 match db_type.as_str() {
-                    "postgresql" | "postgres" => {
-                        std::env::var("DATABASE_URL").ok()
-                    }
-                    _ => Some("./memento.db".to_string())
+                    "postgresql" | "postgres" => None,
+                    _ => Some("./db/memento.db".to_string())
                 }
             });
         
@@ -265,14 +416,11 @@ pub async fn start_mcp_server(
 
     let provider = std::env::var("MEMENTO_EMBEDDING_PROVIDER")
         .ok()
-        .or_else(|| std::env::var("EMBEDDING_PROVIDER").ok())
         .or_else(|| file_provider)
         .unwrap_or_else(|| "local".to_string());
     
     let api_key = if provider == "openai" {
-        std::env::var("MEMENTO_OPENAI_API_KEY")
-            .ok()
-            .or_else(|| std::env::var("OPENAI_API_KEY").ok())
+        std::env::var("MEMENTO_OPENAI_API_KEY").ok()
     } else {
         None
     };
@@ -280,14 +428,13 @@ pub async fn start_mcp_server(
     if provider == "openai" && api_key.is_none() {
         let config_path_str = config_path().ok().map(|p| format!("{:?}", p));
         return Err(anyhow::anyhow!(
-            "OpenAI embedding provider requires API key. Set MEMENTO_OPENAI_API_KEY or OPENAI_API_KEY environment variable. Config path: {:?}",
+            "OpenAI embedding provider requires API key. Set MEMENTO_OPENAI_API_KEY environment variable. Config path: {:?}",
             config_path_str
         ));
     }
     
     let model = std::env::var("MEMENTO_EMBEDDING_MODEL")
         .ok()
-        .or_else(|| std::env::var("EMBEDDING_MODEL").ok())
         .or_else(|| file_model)
         .unwrap_or_else(|| {
             let config = Config::from_env();
@@ -298,7 +445,6 @@ pub async fn start_mcp_server(
         .or_else(|| {
             std::env::var("MEMENTO_EMBEDDING_DIM")
                 .ok()
-                .or_else(|| std::env::var("EMBEDDING_DIM").ok())
                 .and_then(|s| s.parse().ok())
         })
         .or(file_dim)
@@ -412,6 +558,10 @@ async fn handle_mcp_request(
                             "metadata": {
                                 "type": "object",
                                 "description": "Additional metadata for filtering. Example: {\"tags\": [\"preference\", \"error-handling\"], \"project\": \"myapp\"}"
+                            },
+                            "importance": {
+                                "type": "number",
+                                "description": "Optional importance override (0.0-1.0). If not provided, importance is calculated automatically based on content novelty and heuristics."
                             }
                         },
                         "required": ["text", "agent_id"]
@@ -517,6 +667,47 @@ async fn handle_mcp_request(
                         },
                         "required": ["agent_id"]
                     }
+                },
+                {
+                    "name": "memento.get_config",
+                    "description": "Get current Memento configuration. Use when user asks about memory settings, database location, or embedding provider.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {},
+                        "required": []
+                    }
+                },
+                {
+                    "name": "memento.configure",
+                    "description": "Update Memento configuration. Use when user wants to change database storage (local SQLite vs cloud PostgreSQL) or embedding provider (local vs OpenAI). Changes take effect on next server restart. Only provide fields you want to change.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "database_type": {
+                                "type": "string",
+                                "enum": ["sqlite", "postgresql"],
+                                "description": "Database type. 'sqlite' for local file storage, 'postgresql' for cloud/team database."
+                            },
+                            "database_url": {
+                                "type": "string",
+                                "description": "Database connection. For SQLite: folder path (e.g., './db' or '~/memento'). For PostgreSQL: full URL (e.g., 'postgresql://user:pass@host:5432/db')."
+                            },
+                            "embedding_provider": {
+                                "type": "string",
+                                "enum": ["local", "openai"],
+                                "description": "Embedding provider. 'local' runs on device (free), 'openai' uses API (requires MEMENTO_OPENAI_API_KEY env var)."
+                            },
+                            "embedding_model": {
+                                "type": "string",
+                                "description": "Model name. Local default: 'Xenova/all-MiniLM-L6-v2'. OpenAI default: 'text-embedding-3-small'."
+                            },
+                            "embedding_dim": {
+                                "type": "number",
+                                "description": "Embedding dimension. Local default: 384. OpenAI default: 1536."
+                            }
+                        },
+                        "required": []
+                    }
                 }
             ],
             "serverInfo": {
@@ -557,6 +748,15 @@ async fn handle_mcp_request(
                 "memento.forget" => {
                     match serde_json::from_value::<ForgetToolArgs>(args.clone()) {
                         Ok(args) => handle_forget(db, vector_store, args).await,
+                        Err(e) => Err(anyhow::anyhow!("Invalid arguments: {}", e)),
+                    }
+                }
+                "memento.get_config" => {
+                    handle_get_config()
+                }
+                "memento.configure" => {
+                    match serde_json::from_value::<ConfigureToolArgs>(args.clone()) {
+                        Ok(args) => handle_configure(args),
                         Err(e) => Err(anyhow::anyhow!("Invalid arguments: {}", e)),
                     }
                 }
@@ -602,6 +802,29 @@ async fn handle_store(
         return Err(anyhow::anyhow!("text is required"));
     }
 
+    if args.text.len() > MAX_TEXT_LENGTH {
+        return Err(anyhow::anyhow!(
+            "text exceeds maximum length of {} bytes ({} provided)",
+            MAX_TEXT_LENGTH,
+            args.text.len()
+        ));
+    }
+
+    // Validate and clamp importance override to [0.0, 1.0]
+    let importance_override = args.importance.map(|imp| imp.clamp(0.0, 1.0));
+
+    // Validate metadata size if provided
+    if let Some(ref metadata) = args.metadata {
+        let metadata_json = serde_json::to_string(metadata).unwrap_or_default();
+        if metadata_json.len() > MAX_METADATA_SIZE {
+            return Err(anyhow::anyhow!(
+                "metadata exceeds maximum size of {} bytes ({} provided)",
+                MAX_METADATA_SIZE,
+                metadata_json.len()
+            ));
+        }
+    }
+
     let event_type = args.event_type.unwrap_or_else(|| "user_msg".to_string());
 
     let event_id = Uuid::new_v4().to_string();
@@ -630,6 +853,26 @@ async fn handle_store(
         && !args.text.trim().ends_with('?'); // Questions are often ephemeral
     
     if should_promote {
+        // Compute embedding first - needed for both importance scoring and storage
+        let embedding = match vector_store.compute_embedding(&args.text).await {
+            Ok(emb) => emb,
+            Err(e) => {
+                return Err(anyhow::anyhow!("Failed to compute embedding: {}", e));
+            }
+        };
+
+        // Calculate importance using multiple signals (content heuristics + novelty)
+        // Uses the pre-validated and clamped importance_override
+        let importance = crate::scoring::calculate_importance(
+            &args.text,
+            &embedding,
+            vector_store,
+            &args.agent_id,
+            args.user_id.as_deref(),
+            importance_override,
+        )
+        .await;
+
         let memory = Memory {
             id: Uuid::new_v4().to_string(),
             agent_id: args.agent_id.clone(),
@@ -637,7 +880,7 @@ async fn handle_store(
             session_id: args.session_id.clone(),
             memory_type: "episodic".to_string(),
             text: args.text.clone(),
-            importance: 0.5,
+            importance,
             is_active: true,
             supersedes_id: None,
             source_event_ids: Some(json!([event_id]).to_string()),
@@ -647,7 +890,6 @@ async fn handle_store(
                 .map(|m| serde_json::to_string(m).unwrap_or_default()),
             last_accessed_at: None,
             created_at: Utc::now(),
-            expires_at: None,
         };
 
         let mem_id = memory.id.clone();
@@ -668,10 +910,9 @@ async fn handle_store(
             }
         }
 
-        // VectorStore::add() computes the embedding (since we pass None) and then
-        // UPDATEs the memories.embedding column, so embeddings are properly stored
+        // Store embedding (already computed above for importance scoring)
         // If embedding add fails, deactivate the memory to avoid inconsistent state
-        if let Err(e) = vector_store.add(&mem_id, &args.text, None, vector_metadata).await {
+        if let Err(e) = vector_store.add(&mem_id, &args.text, Some(embedding), vector_metadata).await {
             // Cleanup: deactivate memory if embedding storage fails
             let _ = db.soft_delete_memory(&mem_id).await;
             return Err(anyhow::anyhow!("Failed to store embedding: {}", e));
@@ -689,7 +930,6 @@ async fn handle_store(
         "memory_id": memory_id
     }))
 }
-
 async fn handle_search(
     db: &DatabaseClient,
     vector_store: &Arc<VectorStore>,
@@ -699,7 +939,8 @@ async fn handle_search(
         return Err(anyhow::anyhow!("agent_id and query are required"));
     }
 
-    let k = args.k.unwrap_or(5);
+    // Clamp k to prevent unbounded resource usage
+    let k = args.k.unwrap_or(5).min(MAX_SEARCH_RESULTS);
     let filters = args.filters.unwrap_or_default();
 
     // Try vector search first (semantic search)
@@ -727,10 +968,15 @@ async fn handle_search(
     let memory_ids: Vec<String> = vector_results.iter().map(|r| r.memory_id.clone()).collect();
     let memories = db.get_memories_by_ids(&memory_ids).await?;
     
+    // Boost importance for accessed memories (also updates last_accessed_at)
     for memory_id in &memory_ids {
         if let Some(memory) = memories.get(memory_id) {
             if memory.is_active {
-                let _ = db.update_memory_access(&memory.id).await;
+                let _ = db.boost_importance(
+                    &memory.id,
+                    crate::scoring::ACCESS_BOOST,
+                    crate::scoring::MAX_IMPORTANCE,
+                ).await;
             }
         }
     }
@@ -765,25 +1011,37 @@ async fn handle_search(
     }))
 }
 
-/// Keyword search fallback when vector search returns no results
-/// Uses SQL LIKE for simple text matching
+/// Escapes SQL LIKE wildcard characters to prevent unintended pattern matching.
+/// Escapes: % (any chars), _ (single char), \ (escape char)
+#[doc(hidden)]
+pub fn escape_like_pattern(query: &str) -> String {
+    query
+        .replace('\\', "\\\\") // Escape backslash first
+        .replace('%', "\\%")   // Escape percent
+        .replace('_', "\\_")   // Escape underscore
+}
+
+/// Keyword search fallback when vector search returns no results.
+/// Uses SQL LIKE for simple text matching.
+/// 
+/// # Security
+/// Query is escaped to prevent SQL LIKE wildcard injection.
 async fn keyword_search_fallback(
     db: &DatabaseClient,
     query: &str,
     k: usize,
     agent_id: Option<&str>,
     user_id: Option<&str>,
-) -> Result<Vec<crate::vector_store::VectorSearchResult>> {
-    use crate::vector_store::VectorSearchResult;
-    use crate::types::Metadata;
-    
-    let search_pattern = format!("%{}%", query);
+) -> Result<Vec<VectorSearchResult>> {
+    // Escape LIKE wildcards to prevent injection (e.g., "100%" matching everything)
+    let escaped_query = escape_like_pattern(query);
+    let search_pattern = format!("%{}%", escaped_query);
     let mut results = Vec::new();
 
     match db {
         DatabaseClient::Sqlite(pool) => {
             let mut sql = String::from(
-                "SELECT id, text, metadata FROM memories WHERE is_active = 1 AND text LIKE ?1 AND (expires_at IS NULL OR expires_at > datetime('now'))"
+                "SELECT id, text, metadata FROM memories WHERE is_active = 1 AND text LIKE ?1 ESCAPE '\\'"
             );
             let mut binds: Vec<String> = vec![search_pattern.clone()];
             let mut bind_idx = 2;
@@ -829,7 +1087,7 @@ async fn keyword_search_fallback(
         }
         DatabaseClient::Postgres(pool) => {
             let mut sql = String::from(
-                "SELECT id, text, metadata FROM memories WHERE is_active = TRUE AND text ILIKE $1 AND (expires_at IS NULL OR expires_at > NOW())"
+                "SELECT id, text, metadata FROM memories WHERE is_active = TRUE AND text ILIKE $1 ESCAPE '\\'"
             );
             let mut binds: Vec<String> = vec![search_pattern.clone()];
             let mut bind_idx = 2;
@@ -1002,4 +1260,164 @@ async fn handle_forget(
         "deleted": deleted
     }))
 }
+
+fn handle_get_config() -> Result<Value> {
+    let config = load_config_from_file();
+    
+    match config {
+        Some(cfg) => {
+            let db_type = cfg.get("database_type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("sqlite");
+            let db_url = cfg.get("database_url")
+                .and_then(|v| v.as_str())
+                .unwrap_or("./db/memento.db");
+            let provider = cfg.get("embedding_provider")
+                .and_then(|v| v.as_str())
+                .unwrap_or("local");
+            let model = cfg.get("embedding_model")
+                .and_then(|v| v.as_str())
+                .unwrap_or("Xenova/all-MiniLM-L6-v2");
+            let dim = cfg.get("embedding_dim")
+                .and_then(|v| v.as_u64())
+                .map(|d| d as usize);
+            
+            let config_path_str = config_path()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|_| "unknown".to_string());
+            
+            mcp_text_response(&json!({
+                "database_type": db_type,
+                "database_url": db_url,
+                "embedding_provider": provider,
+                "embedding_model": model,
+                "embedding_dim": dim,
+                "config_path": config_path_str,
+                "note": "Changes via memento.configure take effect after restarting the MCP server."
+            }))
+        }
+        None => {
+            mcp_text_response(&json!({
+                "error": "No configuration file found",
+                "note": "Memento is using default settings. Use memento.configure to customize."
+            }))
+        }
+    }
+}
+
+fn handle_configure(args: ConfigureToolArgs) -> Result<Value> {
+    use crate::types::{DatabaseType, EmbeddingProviderType};
+    
+    // Load existing config or start with defaults
+    let mut config = load_config_from_file().unwrap_or_else(|| {
+        json!({
+            "database_type": "sqlite",
+            "database_url": "./db/memento.db",
+            "embedding_provider": "local",
+            "embedding_model": "Xenova/all-MiniLM-L6-v2",
+            "embedding_dim": 384
+        })
+    });
+    
+    let mut changes = Vec::new();
+    
+    // Apply database_type (already validated by serde deserialization)
+    if let Some(db_type) = &args.database_type {
+        config["database_type"] = json!(db_type.to_string());
+        changes.push(format!("database_type: {}", db_type));
+    }
+    
+    // Validate and apply database_url
+    if let Some(db_url) = &args.database_url {
+        let is_postgresql = args.database_type == Some(DatabaseType::Postgresql)
+            || config["database_type"].as_str() == Some("postgresql");
+        
+        if is_postgresql {
+            // Validate PostgreSQL URL
+            if !is_valid_postgres_url(db_url) {
+                return Err(anyhow::anyhow!(
+                    "Invalid PostgreSQL URL. Format: postgresql://user:password@host:port/database"
+                ));
+            }
+            config["database_url"] = json!(db_url);
+        } else {
+            // SQLite - treat as folder path, append memento.db
+            let path = db_url.trim().trim_end_matches('/');
+            let full_path = if path.ends_with(".db") {
+                path.to_string()
+            } else {
+                format!("{}/memento.db", path)
+            };
+            config["database_url"] = json!(full_path);
+        }
+        changes.push(format!("database_url: {}", config["database_url"].as_str().unwrap()));
+    }
+    
+    // Apply embedding_provider (already validated by serde deserialization)
+    if let Some(provider) = &args.embedding_provider {
+        if *provider == EmbeddingProviderType::Openai {
+            // Check if API key is set
+            if std::env::var("MEMENTO_OPENAI_API_KEY").is_err() {
+                return Err(anyhow::anyhow!(
+                    "OpenAI provider requires MEMENTO_OPENAI_API_KEY environment variable. \
+                    Please set this in your shell profile or MCP client configuration before switching to OpenAI."
+                ));
+            }
+        }
+        config["embedding_provider"] = json!(provider.to_string());
+        changes.push(format!("embedding_provider: {}", provider));
+        
+        // Auto-update model and dim defaults when switching providers
+        if args.embedding_model.is_none() {
+            let default_model = match provider {
+                EmbeddingProviderType::Openai => "text-embedding-3-small",
+                EmbeddingProviderType::Local => "Xenova/all-MiniLM-L6-v2",
+            };
+            config["embedding_model"] = json!(default_model);
+            changes.push(format!("embedding_model: {} (auto)", default_model));
+        }
+        if args.embedding_dim.is_none() {
+            let default_dim = match provider {
+                EmbeddingProviderType::Openai => 1536,
+                EmbeddingProviderType::Local => 384,
+            };
+            config["embedding_dim"] = json!(default_dim);
+            changes.push(format!("embedding_dim: {} (auto)", default_dim));
+        }
+    }
+    
+    // Apply embedding_model
+    if let Some(model) = &args.embedding_model {
+        config["embedding_model"] = json!(model);
+        changes.push(format!("embedding_model: {}", model));
+    }
+    
+    // Apply embedding_dim
+    if let Some(dim) = args.embedding_dim {
+        config["embedding_dim"] = json!(dim);
+        changes.push(format!("embedding_dim: {}", dim));
+    }
+    
+    if changes.is_empty() {
+        return mcp_text_response(&json!({
+            "ok": false,
+            "message": "No changes provided. Specify at least one field to update."
+        }));
+    }
+    
+    // Save the updated config
+    let path = config_path()?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(&path, serde_json::to_vec_pretty(&config)?)?;
+    
+    mcp_text_response(&json!({
+        "ok": true,
+        "changes": changes,
+        "message": "Configuration updated. Restart the MCP server for changes to take effect.",
+        "config_path": path.display().to_string()
+    }))
+}
+
 
