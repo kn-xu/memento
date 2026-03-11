@@ -47,7 +47,8 @@ pub fn content_heuristics(text: &str) -> f64 {
     adjustment += (action_matches as f64 * 0.03).min(0.1);
 
     // Contains structured data (code, lists, etc.)
-    if text.contains("```") || text.contains("fn ") || text.contains("function ") {
+    let has_fn_keyword = text.starts_with("fn ") || text.contains(" fn ") || text.contains("\nfn ") || text.contains("\tfn ");
+    if text.contains("```") || has_fn_keyword || text.contains("function ") {
         adjustment += 0.05; // Code snippets
     }
     if text.lines().filter(|l| l.trim().starts_with('-') || l.trim().starts_with('*')).count() >= 3 {

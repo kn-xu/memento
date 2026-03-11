@@ -8,13 +8,12 @@ use crate::database::{DatabaseClient, Memory, MemoryEvent};
 use crate::embeddings::get_embedding_provider;
 use crate::prompts::format_summarize_instructions;
 use crate::types::*;
-use crate::vector_store::{VectorSearchResult, VectorStore};
+use crate::vector_store::VectorStore;
 use anyhow::Result;
 use chrono::Utc;
 use dialoguer::{Confirm, Input, Select};
 use directories::ProjectDirs;
 use serde_json::{json, Value};
-use sqlx::Row;
 use std::fs;
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::PathBuf;
@@ -873,6 +872,30 @@ async fn handle_store(
         )
         .await;
 
+        // ── Salience integration stub ──────────────────────────────────────────
+        // Compute emotional salience (modulates encoding priority, decay, retrieval rank).
+        //
+        // TODO: thread SalienceAnalyzer through run_mcp as Arc<Mutex<SalienceAnalyzer>>
+        // and wire it into handle_store:
+        //
+        //   use crate::salience::{SalienceAnalyzer, InteractionContext};
+        //   let salience = analyzer.lock().unwrap()
+        //       .analyze(&args.text, &InteractionContext::default());
+        //   let _ = analyzer.lock().unwrap()
+        //       .save_baseline(db, &args.agent_id, args.user_id.as_deref()).await;
+        //
+        // Downstream integration points once wired:
+        //
+        //   1. Encoding priority:
+        //      if salience.value > 0.8 { /* promote immediately, skip should_promote check */ }
+        //
+        //   2. Decay rate modulation (applied during scheduled pruning):
+        //      let decay_rate = base_decay * (1.0 - salience.value * 0.8);
+        //
+        //   3. Retrieval score blending (in handle_search / vector_store):
+        //      let score = sem_sim * 0.6 + salience.value * 0.25 + recency * 0.15;
+        // ──────────────────────────────────────────────────────────────────────
+
         let memory = Memory {
             id: Uuid::new_v4().to_string(),
             agent_id: args.agent_id.clone(),
@@ -890,6 +913,7 @@ async fn handle_store(
                 .map(|m| serde_json::to_string(m).unwrap_or_default()),
             last_accessed_at: None,
             created_at: Utc::now(),
+            salience: None, // TODO: set from SalienceAnalyzer once wired above
         };
 
         let mem_id = memory.id.clone();
@@ -955,14 +979,14 @@ async fn handle_search(
         .await?;
 
     if vector_results.is_empty() {
-        vector_results = keyword_search_fallback(
-            db,
-            &args.query,
-            k,
-            Some(&args.agent_id),
-            args.user_id.as_deref(),
-        )
-        .await?;
+        vector_results = vector_store
+            .keyword_search(
+                &args.query,
+                k,
+                Some(&args.agent_id),
+                args.user_id.as_deref(),
+            )
+            .await?;
     }
 
     let memory_ids: Vec<String> = vector_results.iter().map(|r| r.memory_id.clone()).collect();
@@ -1009,133 +1033,6 @@ async fn handle_search(
         "ok": true,
         "results": results
     }))
-}
-
-/// Escapes SQL LIKE wildcard characters to prevent unintended pattern matching.
-/// Escapes: % (any chars), _ (single char), \ (escape char)
-#[doc(hidden)]
-pub fn escape_like_pattern(query: &str) -> String {
-    query
-        .replace('\\', "\\\\") // Escape backslash first
-        .replace('%', "\\%")   // Escape percent
-        .replace('_', "\\_")   // Escape underscore
-}
-
-/// Keyword search fallback when vector search returns no results.
-/// Uses SQL LIKE for simple text matching.
-/// 
-/// # Security
-/// Query is escaped to prevent SQL LIKE wildcard injection.
-async fn keyword_search_fallback(
-    db: &DatabaseClient,
-    query: &str,
-    k: usize,
-    agent_id: Option<&str>,
-    user_id: Option<&str>,
-) -> Result<Vec<VectorSearchResult>> {
-    // Escape LIKE wildcards to prevent injection (e.g., "100%" matching everything)
-    let escaped_query = escape_like_pattern(query);
-    let search_pattern = format!("%{}%", escaped_query);
-    let mut results = Vec::new();
-
-    match db {
-        DatabaseClient::Sqlite(pool) => {
-            let mut sql = String::from(
-                "SELECT id, text, metadata FROM memories WHERE is_active = 1 AND text LIKE ?1 ESCAPE '\\'"
-            );
-            let mut binds: Vec<String> = vec![search_pattern.clone()];
-            let mut bind_idx = 2;
-
-            if let Some(agent_id) = agent_id {
-                sql.push_str(&format!(" AND agent_id = ?{}", bind_idx));
-                binds.push(agent_id.to_string());
-                bind_idx += 1;
-            }
-
-            if let Some(user_id) = user_id {
-                sql.push_str(&format!(" AND user_id = ?{}", bind_idx));
-                binds.push(user_id.to_string());
-            }
-
-            let mut q = sqlx::query(&sql);
-            for b in &binds {
-                q = q.bind(b);
-            }
-
-            let rows = q.fetch_all(pool).await?;
-            
-            for row in rows.into_iter().take(k) {
-                let memory_id: String = row.try_get(&"id")?;
-                let text: String = row.try_get(&"text")?;
-                let metadata_str: Option<String> = row.try_get(&"metadata")?;
-                
-                // Simple relevance score based on query term frequency
-                let score = text.to_lowercase().matches(&query.to_lowercase()).count() as f64 / 10.0;
-                
-                let metadata: Metadata = if let Some(meta_str) = metadata_str {
-                    serde_json::from_str(&meta_str).unwrap_or_default()
-                } else {
-                    Metadata::new()
-                };
-
-                results.push(VectorSearchResult {
-                    memory_id,
-                    score: score.min(1.0), // Cap at 1.0
-                    metadata,
-                });
-            }
-        }
-        DatabaseClient::Postgres(pool) => {
-            let mut sql = String::from(
-                "SELECT id, text, metadata FROM memories WHERE is_active = TRUE AND text ILIKE $1 ESCAPE '\\'"
-            );
-            let mut binds: Vec<String> = vec![search_pattern.clone()];
-            let mut bind_idx = 2;
-
-            if let Some(agent_id) = agent_id {
-                sql.push_str(&format!(" AND agent_id = ${}", bind_idx));
-                binds.push(agent_id.to_string());
-                bind_idx += 1;
-            }
-
-            if let Some(user_id) = user_id {
-                sql.push_str(&format!(" AND user_id = ${}", bind_idx));
-                binds.push(user_id.to_string());
-            }
-
-            let mut q = sqlx::query(&sql);
-            for b in &binds {
-                q = q.bind(b);
-            }
-
-            let rows = q.fetch_all(pool).await?;
-            
-            for row in rows.into_iter().take(k) {
-                let memory_id: String = row.try_get(&"id")?;
-                let text: String = row.try_get(&"text")?;
-                let metadata_str: Option<String> = row.try_get(&"metadata")?;
-                
-                // Simple relevance score based on query term frequency
-                let score = text.to_lowercase().matches(&query.to_lowercase()).count() as f64 / 10.0;
-                
-                let metadata: Metadata = if let Some(meta_str) = metadata_str {
-                    serde_json::from_str(&meta_str).unwrap_or_default()
-                } else {
-                    Metadata::new()
-                };
-
-                results.push(VectorSearchResult {
-                    memory_id,
-                    score: score.min(1.0), // Cap at 1.0
-                    metadata,
-                });
-            }
-        }
-    }
-
-    results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
-    
-    Ok(results)
 }
 
 async fn handle_summarize(

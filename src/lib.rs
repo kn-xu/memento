@@ -1,4 +1,5 @@
 pub mod bootstrap;
+pub mod salience;
 pub mod config;
 pub mod database;
 pub mod embeddings;

@@ -168,6 +168,7 @@ async fn test_vector_store_add_and_search() {
         metadata: None,
         last_accessed_at: None,
         created_at: chrono::Utc::now(),
+        salience: None,
     };
     db.insert_memory(&memory).await.unwrap();
 
@@ -223,6 +224,7 @@ async fn test_vector_store_delete() {
         metadata: None,
         last_accessed_at: None,
         created_at: chrono::Utc::now(),
+        salience: None,
     };
     db.insert_memory(&memory).await.unwrap();
     vector_store
@@ -271,6 +273,7 @@ async fn test_vector_store_search_with_filters() {
             metadata: None,
             last_accessed_at: None,
             created_at: chrono::Utc::now(),
+            salience: None,
         };
         db.insert_memory(&memory).await.unwrap();
 

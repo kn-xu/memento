@@ -49,6 +49,7 @@ async fn test_full_store_and_search_flow() {
         metadata: None,
         last_accessed_at: None,
         created_at: Utc::now(),
+        salience: None,
     };
     db.insert_memory(&memory).await.unwrap();
 
@@ -102,6 +103,7 @@ async fn test_multi_agent_isolation() {
             metadata: None,
             last_accessed_at: None,
             created_at: Utc::now(),
+            salience: None,
         };
         db.insert_memory(&memory).await.unwrap();
 
@@ -154,6 +156,7 @@ async fn test_forget_flow() {
         metadata: None,
         last_accessed_at: None,
         created_at: Utc::now(),
+        salience: None,
     };
     db.insert_memory(&memory).await.unwrap();
 
@@ -260,6 +263,7 @@ async fn test_user_isolation_within_agent() {
             metadata: None,
             last_accessed_at: None,
             created_at: Utc::now(),
+            salience: None,
         };
         db.insert_memory(&memory).await.unwrap();
 
@@ -312,6 +316,7 @@ async fn test_memory_access_tracking() {
         metadata: None,
         last_accessed_at: None,
         created_at: Utc::now(),
+        salience: None,
     };
     db.insert_memory(&memory).await.unwrap();
 
@@ -347,6 +352,7 @@ async fn test_batch_memory_retrieval() {
             metadata: None,
             last_accessed_at: None,
             created_at: Utc::now(),
+            salience: None,
         };
         db.insert_memory(&memory).await.unwrap();
     }

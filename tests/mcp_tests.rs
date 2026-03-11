@@ -1,7 +1,7 @@
 //! Tests for MCP server functionality.
 
 use memento::config::{MAX_METADATA_SIZE, MAX_SEARCH_RESULTS, MAX_TEXT_LENGTH};
-use memento::mcp::escape_like_pattern;
+use memento::vector_store::escape_like_pattern;
 
 #[test]
 fn test_escape_like_pattern_no_special_chars() {

@@ -56,6 +56,18 @@ dialoguer = "0.11"
 atty = "0.2"
 directories = "5"
 
+[features]
+default = []
+onnx = ["dep:ort", "dep:tokenizers"]
+
 [dev-dependencies]
 tokio-test = "0.4"
+
+[dependencies.ort]
+version = "2.0.0-rc.12"
+optional = true
+
+[dependencies.tokenizers]
+version = "0.19"
+optional = true
 

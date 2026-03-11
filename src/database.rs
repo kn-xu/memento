@@ -3,6 +3,7 @@
 //! Provides a unified interface for memory storage operations across
 //! both database backends.
 
+use crate::types::SalienceScore;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -43,6 +44,18 @@ pub struct Memory {
     pub metadata: Option<String>,
     pub last_accessed_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
+    pub salience: Option<SalienceScore>,
+}
+
+impl Memory {
+    /// Parses `source_event_ids` (stored as a JSON array string) into a `Vec<String>`.
+    /// Returns an empty vec if the field is absent or unparseable.
+    pub fn source_event_ids_as_vec(&self) -> Vec<String> {
+        self.source_event_ids
+            .as_deref()
+            .and_then(|s| serde_json::from_str::<Vec<String>>(s).ok())
+            .unwrap_or_default()
+    }
 }
 
 // =============================================================================
@@ -1018,6 +1031,7 @@ impl DatabaseClient {
             metadata,
             last_accessed_at,
             created_at,
+            salience: None,
         })
     }
 }

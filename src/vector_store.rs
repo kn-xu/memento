@@ -315,14 +315,112 @@ impl VectorStore {
         }
         Ok(())
     }
+
+    /// Keyword search fallback when vector search returns no results.
+    /// Uses SQL LIKE for simple text matching.
+    ///
+    /// # Security
+    /// Query is escaped to prevent SQL LIKE wildcard injection.
+    pub async fn keyword_search(
+        &self,
+        query: &str,
+        k: usize,
+        agent_id: Option<&str>,
+        user_id: Option<&str>,
+    ) -> Result<Vec<VectorSearchResult>> {
+        let escaped_query = escape_like_pattern(query);
+        let search_pattern = format!("%{}%", escaped_query);
+        let mut results = Vec::new();
+
+        match &self.db {
+            DatabaseClient::Sqlite(pool) => {
+                let mut sql = String::from(
+                    "SELECT id, text, metadata FROM memories WHERE is_active = 1 AND text LIKE ?1 ESCAPE '\\'"
+                );
+                let mut binds: Vec<String> = vec![search_pattern.clone()];
+                let mut bind_idx = 2;
+
+                if let Some(aid) = agent_id {
+                    sql.push_str(&format!(" AND agent_id = ?{}", bind_idx));
+                    binds.push(aid.to_string());
+                    bind_idx += 1;
+                }
+                if let Some(uid) = user_id {
+                    sql.push_str(&format!(" AND user_id = ?{}", bind_idx));
+                    binds.push(uid.to_string());
+                }
+
+                let mut q = sqlx::query(&sql);
+                for b in &binds {
+                    q = q.bind(b);
+                }
+                let rows = q.fetch_all(pool).await?;
+                for row in rows.into_iter().take(k) {
+                    let memory_id: String = row.try_get("id")?;
+                    let text: String = row.try_get("text")?;
+                    let metadata_str: Option<String> = row.try_get("metadata")?;
+                    let score = (text.to_lowercase().matches(&query.to_lowercase()).count() as f64 / 10.0).min(1.0);
+                    let metadata: Metadata = metadata_str
+                        .and_then(|s| serde_json::from_str(&s).ok())
+                        .unwrap_or_default();
+                    results.push(VectorSearchResult { memory_id, score, metadata });
+                }
+            }
+            DatabaseClient::Postgres(pool) => {
+                let mut sql = String::from(
+                    "SELECT id, text, metadata FROM memories WHERE is_active = TRUE AND text ILIKE $1 ESCAPE '\\'"
+                );
+                let mut binds: Vec<String> = vec![search_pattern.clone()];
+                let mut bind_idx = 2;
+
+                if let Some(aid) = agent_id {
+                    sql.push_str(&format!(" AND agent_id = ${}", bind_idx));
+                    binds.push(aid.to_string());
+                    bind_idx += 1;
+                }
+                if let Some(uid) = user_id {
+                    sql.push_str(&format!(" AND user_id = ${}", bind_idx));
+                    binds.push(uid.to_string());
+                }
+
+                let mut q = sqlx::query(&sql);
+                for b in &binds {
+                    q = q.bind(b);
+                }
+                let rows = q.fetch_all(pool).await?;
+                for row in rows.into_iter().take(k) {
+                    let memory_id: String = row.try_get("id")?;
+                    let text: String = row.try_get("text")?;
+                    let metadata_str: Option<String> = row.try_get("metadata")?;
+                    let score = (text.to_lowercase().matches(&query.to_lowercase()).count() as f64 / 10.0).min(1.0);
+                    let metadata: Metadata = metadata_str
+                        .and_then(|s| serde_json::from_str(&s).ok())
+                        .unwrap_or_default();
+                    results.push(VectorSearchResult { memory_id, score, metadata });
+                }
+            }
+        }
+
+        results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        Ok(results)
+    }
+}
+
+/// Escapes SQL LIKE wildcard characters to prevent unintended pattern matching.
+/// Escapes: % (any chars), _ (single char), \ (escape char)
+pub fn escape_like_pattern(query: &str) -> String {
+    query
+        .replace('\\', "\\\\") // Escape backslash first
+        .replace('%', "\\%")   // Escape percent
+        .replace('_', "\\_")   // Escape underscore
 }
 
 /// Computes cosine similarity between two vectors.
-/// 
+///
 /// # Returns
 /// - Similarity score in range [-1.0, 1.0] for valid inputs
 /// - 0.0 for edge cases: different lengths, zero vectors, or NaN values
-/// 
+///
 /// # Edge Cases Handled
 /// - Different vector lengths → 0.0
 /// - Zero-magnitude vectors → 0.0

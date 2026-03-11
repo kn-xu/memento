@@ -75,6 +75,7 @@ async fn simulate_store(
         metadata: args.metadata.as_ref().map(|m| serde_json::to_string(m).unwrap()),
         last_accessed_at: None,
         created_at: Utc::now(),
+        salience: None,
     };
     db.insert_memory(&memory).await.map_err(|e| e.to_string())?;
 

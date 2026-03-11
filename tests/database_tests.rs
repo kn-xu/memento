@@ -96,6 +96,7 @@ async fn test_insert_and_get_memory() {
         metadata: None,
         last_accessed_at: None,
         created_at: chrono::Utc::now(),
+        salience: None,
     };
 
     db.insert_memory(&memory).await.unwrap();
@@ -126,6 +127,7 @@ async fn test_soft_delete_memory() {
         metadata: None,
         last_accessed_at: None,
         created_at: chrono::Utc::now(),
+        salience: None,
     };
 
     db.insert_memory(&memory).await.unwrap();
@@ -194,6 +196,7 @@ async fn test_get_memories_by_ids() {
             metadata: None,
             last_accessed_at: None,
             created_at: chrono::Utc::now(),
+            salience: None,
         };
         db.insert_memory(&memory).await.unwrap();
     }
@@ -232,6 +235,7 @@ async fn test_update_memory_access() {
         metadata: None,
         last_accessed_at: None,
         created_at: chrono::Utc::now(),
+        salience: None,
     };
 
     db.insert_memory(&memory).await.unwrap();
@@ -269,6 +273,7 @@ async fn test_boost_importance_normal() {
         metadata: None,
         last_accessed_at: None,
         created_at: chrono::Utc::now(),
+        salience: None,
     };
     db.insert_memory(&memory).await.unwrap();
 
@@ -298,6 +303,7 @@ async fn test_boost_importance_zero_max_importance() {
         metadata: None,
         last_accessed_at: None,
         created_at: chrono::Utc::now(),
+        salience: None,
     };
     db.insert_memory(&memory).await.unwrap();
 
@@ -326,6 +332,7 @@ async fn test_boost_importance_negative_max_importance() {
         metadata: None,
         last_accessed_at: None,
         created_at: chrono::Utc::now(),
+        salience: None,
     };
     db.insert_memory(&memory).await.unwrap();
 
@@ -354,6 +361,7 @@ async fn test_boost_importance_zero_boost_amount() {
         metadata: None,
         last_accessed_at: None,
         created_at: chrono::Utc::now(),
+        salience: None,
     };
     db.insert_memory(&memory).await.unwrap();
 
@@ -382,6 +390,7 @@ async fn test_boost_importance_negative_boost_amount() {
         metadata: None,
         last_accessed_at: None,
         created_at: chrono::Utc::now(),
+        salience: None,
     };
     db.insert_memory(&memory).await.unwrap();
 

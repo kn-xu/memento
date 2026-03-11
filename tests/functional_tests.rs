@@ -56,6 +56,7 @@ async fn test_insert_duplicate_memory_id_fails() {
         metadata: None,
         last_accessed_at: None,
         created_at: Utc::now(),
+        salience: None,
     };
     
     db.insert_memory(&memory).await.unwrap();
@@ -117,6 +118,7 @@ async fn test_batch_retrieval_with_nonexistent_ids() {
         metadata: None,
         last_accessed_at: None,
         created_at: Utc::now(),
+        salience: None,
     };
     db.insert_memory(&memory).await.unwrap();
     
@@ -162,6 +164,7 @@ async fn test_memory_with_all_optional_fields() {
         metadata: None,
         last_accessed_at: None,
         created_at: Utc::now(),
+        salience: None,
     };
     db.insert_memory(&old_memory).await.unwrap();
     
@@ -179,6 +182,7 @@ async fn test_memory_with_all_optional_fields() {
         metadata: Some(serde_json::to_string(&metadata).unwrap()),
         last_accessed_at: Some(Utc::now()),
         created_at: Utc::now(),
+        salience: None,
     };
     
     db.insert_memory(&memory).await.unwrap();
@@ -229,6 +233,7 @@ async fn test_search_with_k_zero() {
         metadata: None,
         last_accessed_at: None,
         created_at: Utc::now(),
+        salience: None,
     };
     db.insert_memory(&memory).await.unwrap();
     vector_store.add("mem-k0", "Test", None, Metadata::new()).await.unwrap();
@@ -264,6 +269,7 @@ async fn test_search_with_large_k() {
             metadata: None,
             last_accessed_at: None,
             created_at: Utc::now(),
+            salience: None,
         };
         db.insert_memory(&memory).await.unwrap();
         let mut meta = Metadata::new();
@@ -312,6 +318,7 @@ async fn test_search_with_empty_query() {
         metadata: None,
         last_accessed_at: None,
         created_at: Utc::now(),
+        salience: None,
     };
     db.insert_memory(&memory).await.unwrap();
     let mut meta = Metadata::new();
@@ -430,6 +437,7 @@ async fn test_concurrent_memory_insertions() {
                 metadata: None,
                 last_accessed_at: None,
                 created_at: Utc::now(),
+                salience: None,
             };
             db_clone.insert_memory(&memory).await
         }));
@@ -468,6 +476,7 @@ async fn test_concurrent_searches() {
             metadata: None,
             last_accessed_at: None,
             created_at: Utc::now(),
+            salience: None,
         };
         db.insert_memory(&memory).await.unwrap();
         let mut meta = Metadata::new();
